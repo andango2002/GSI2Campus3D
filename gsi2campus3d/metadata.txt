@@ -2,16 +2,13 @@
 name=GSI2Campus3D
 qgisMinimumVersion=3.34
 qgisMaximumVersion=3.99
-description=Create 3D regional models from Japanese GSI geospatial data for QGIS and Blender workflows.
-version=0.4.19
-author=Akinaru Iino
-email=
-about=GSI2Campus3D prepares Japanese GSI DEM, building, and road data for QGIS 3D visualization and Blender export. It generates separate terrain, road, and building objects and supports terrain texture generation and vertical exaggeration. QuickDEM4JP is required for DEM processing. The plugin is primarily designed for use with Japanese GSI Fundamental Geospatial Data.
+description=Prepare GSI Fundamental Geospatial Data for QGIS 3D / Blender workflows.
+version=0.4.22
+author=Akinaru Iino / OpenAI prototype
+email=aiino@abe.niit.ac.jp
+about=Prepare GSI DEM/buildings/roads for QGIS 3D, inspect them first, then export a deterministic Blender package with separate Terrain, Roads, and four building OBJ files. Horizontal scale and vertical exaggeration are explicit.
 category=Vector
 experimental=True
 icon=icon.svg
-homepage=https://github.com/andango2002/GSI2Campus3D
-repository=https://github.com/andango2002/GSI2Campus3D
-tracker=https://github.com/andango2002/GSI2Campus3D/issues
-license=GPL-3.0
-tags=GSI,DEM,3D,Blender,GIS,terrain,education,Japan
+
+changelog=0.4.22 - Classroom robustness release: invalid geometry repair, detailed progress feedback, stable Terrain texture rendering, GSI seamless photo + current 2D vector overlay mode, and overlay mode as the default Terrain texture source.
