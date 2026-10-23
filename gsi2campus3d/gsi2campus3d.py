@@ -2,14 +2,22 @@ import os, glob, traceback, re, zipfile, math, json, shutil
 import tempfile
 from pathlib import Path
 from qgis.PyQt.QtCore import QSettings, QSize, QTimer
-from qgis.PyQt.QtGui import QKeySequence, QIcon
+from qgis.PyQt.QtGui import QKeySequence, QIcon, QColor, QPainter
 from qgis.PyQt.QtWidgets import (QAction,QDialog,QVBoxLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,
     QFileDialog,QComboBox,QCheckBox,QDoubleSpinBox,QMessageBox,QGroupBox,QFormLayout,QProgressBar,QApplication,QScrollArea,QWidget)
 from qgis.core import (QgsProject,QgsVectorLayer,QgsRasterLayer,QgsCoordinateReferenceSystem,
-    QgsRectangle,QgsMessageLog,Qgis,QgsPointXY,QgsWkbTypes,QgsMapSettings,QgsMapRendererParallelJob)
+    QgsRectangle,QgsMessageLog,Qgis,QgsPointXY,QgsWkbTypes,QgsMapSettings,QgsMapRendererSequentialJob)
 import processing
 
 ZONES=[(i,6668+i) for i in range(1,20)]
+
+def _log_suppressed(context, error):
+    """Log non-fatal exceptions instead of silently swallowing them."""
+    QgsMessageLog.logMessage(
+        f"{context}: {error}",
+        "GSI2Campus3D",
+        Qgis.Warning,
+    )
 
 # 平面直角座標系の適用区域（国土地理院の告示に基づく簡略表示）。
 # XI～XIIIは北海道内の地域区分、XIV/XVIII/XIXは東京都島しょ部、
@@ -50,7 +58,8 @@ class GSI2Campus3D:
     def unload(self):
         if self.dialog is not None:
             try: self.dialog.close()
-            except Exception: pass
+            except Exception as e:
+                _log_suppressed('Non-critical operation failed', e)
         if self.action:
             self.iface.removePluginMenu('&GSI2Campus3D',self.action); self.iface.removeToolBarIcon(self.action)
     def run(self):
@@ -79,7 +88,7 @@ class NoWheelComboBox(QComboBox):
 class MainDialog(QDialog):
     def __init__(self,iface):
         self.iface=iface
-        super().__init__(iface.mainWindow()); self.setWindowTitle('Campus3D Workflow [A] — GSI2Campus3D v0.4.18'); self.resize(880,740)
+        super().__init__(iface.mainWindow()); self.setWindowTitle('Campus3D Workflow [A] — GSI2Campus3D v0.4.22-dev2'); self.resize(880,740)
 
         # Outer layout + vertically scrollable content.
         # This keeps the branded full UI usable on 1920x1080 and smaller screens
@@ -107,7 +116,7 @@ class MainDialog(QDialog):
             '&nbsp;&nbsp;<span style="font-size:12pt; font-weight:700; color:#ffffff;">GSI2Campus3D</span><br>'
             '<span style="font-size:9pt; color:#d7dde2;">GSI data preparation for Blender</span>'
             '&nbsp;&nbsp;|&nbsp;&nbsp;'
-            '<span style="font-size:8.5pt; color:#b8c0c7;">Est. 2026 | Powered by IINO Lab. | Plugin v0.4.18</span><br>'
+            '<span style="font-size:8.5pt; color:#b8c0c7;">Est. 2026 | Powered by IINO Lab. | Plugin v0.4.22-dev2</span><br>'
             '<span style="font-size:8.8pt; font-weight:600; color:#e8ecef;">[A] QGIS  →  [B] Blender  →  GLB  →  CampusMint</span>'
             '</div>'
         )
@@ -154,7 +163,8 @@ class MainDialog(QDialog):
         self.hide_sources=QCheckBox('処理後に元のGSIレイヤと入力DEMを非表示'); self.hide_sources.setChecked(True); bf.addRow(self.hide_sources)
         root.addWidget(bb)
         self.go=QPushButton('3Dモデル用データを作成'); self.go.clicked.connect(self.process); root.addWidget(self.go)
-        self.progress=QProgressBar(); root.addWidget(self.progress)
+        self.progress=QProgressBar(); self.progress.setRange(0,100); self.progress.setValue(0); self.progress.setFormat('%p%'); root.addWidget(self.progress)
+        self.main_status=QLabel('待機中'); root.addWidget(self.main_status)
         bx=QGroupBox('[A-2] Blender [B] へ渡す連携パッケージ'); bxf=QFormLayout(bx)
         self.blender_scale=NoWheelComboBox();
         for d in (1000,500,100,1): self.blender_scale.addItem(f'1:{d}' if d!=1 else '1:1（実寸）',d)
@@ -180,7 +190,7 @@ class MainDialog(QDialog):
         bxf.addRow('処理状況',self.blender_status)
         bxf.addRow(QLabel('QGIS 3Dで縦倍率を調整すると、連動ON時はBlender倍率へ自動反映。'))
         root.addWidget(bx)
-        root.addWidget(QLabel('v0.4.18: 数値・座標系などの設定をワンクリックで初期値へ戻すリセット機能を追加しました。'))
+        root.addWidget(QLabel('v0.4.22: 航空写真＋現在の2D表示の合成Terrain画像モードを追加しました。'))
         root.addWidget(QLabel('3D確認: 表示 → 3Dマップビュー → 新規3Dマップビュー'))
         self._last_dem=None; self._last_buildings=[]; self._last_road=None; self._last_epsg=None; self._last_out=None
         self._last_3d_zscale_seen=None
@@ -235,12 +245,12 @@ class MainDialog(QDialog):
 
         # Terrain imagery source: GSI nationwide latest seamless photo.
         try:
-            idx=self.texture_source.findData('GSI_SEAMLESS')
+            idx=self.texture_source.findData('PHOTO_CANVAS')
             if idx >= 0:
                 self.texture_source.setCurrentIndex(idx)
-        except Exception:
-            pass
-        self._saved_texture_source='GSI_SEAMLESS'
+        except Exception as e:
+            _log_suppressed('Non-critical operation failed', e)
+        self._saved_texture_source='PHOTO_CANVAS'
 
         # Reset visual progress/status only; generated layers/files are untouched.
         try:
@@ -248,8 +258,8 @@ class MainDialog(QDialog):
             self.blender_progress.setFormat('%p%')
             self.blender_progress.setValue(0)
             self.blender_status.setText('待機中')
-        except Exception:
-            pass
+        except Exception as e:
+            _log_suppressed('Non-critical operation failed', e)
 
         self._last_3d_zscale_seen=None
         self.save_settings()
@@ -304,10 +314,10 @@ class MainDialog(QDialog):
         self.sea_floor.setValue(val('sea_floor',-5.0,float))
         self.export_texture.setChecked(val('export_texture',True,bool))
         self.texture_px.setValue(val('texture_px',2048.0,float))
-        self._saved_texture_source=val('texture_source','GSI_SEAMLESS',str) or 'GSI_SEAMLESS'
+        self._saved_texture_source=val('texture_source','PHOTO_CANVAS',str) or 'PHOTO_CANVAS'
         # v0.3.6以前の自動設定は、安定版の地理院シームレス写真へ移行
         if self._saved_texture_source in ('AUTO3D','AUTO'):
-            self._saved_texture_source='GSI_SEAMLESS'
+            self._saved_texture_source='PHOTO_CANVAS'
 
     def save_settings(self):
         s=QSettings(); p='GSI2Campus3D/'
@@ -330,15 +340,15 @@ class MainDialog(QDialog):
         s.setValue(p+'sea_floor',self.sea_floor.value())
         s.setValue(p+'export_texture',self.export_texture.isChecked())
         s.setValue(p+'texture_px',self.texture_px.value())
-        s.setValue(p+'texture_source', self.texture_source.currentData() or 'GSI_SEAMLESS')
+        s.setValue(p+'texture_source', self.texture_source.currentData() or 'PHOTO_CANVAS')
         s.sync()
 
     def closeEvent(self,event):
         try:
             if hasattr(self,'_zsync_timer'):
                 self._zsync_timer.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            _log_suppressed('Non-critical operation failed', e)
         self.save_settings()
         super().closeEvent(event)
 
@@ -346,10 +356,11 @@ class MainDialog(QDialog):
         saved=getattr(self,'_saved_texture_source',None)
         if saved is None:
             try: saved=self.texture_source.currentData()
-            except Exception: saved='GSI_SEAMLESS'
+            except Exception: saved='PHOTO_CANVAS'
         self.texture_source.blockSignals(True)
         self.texture_source.clear()
         self.texture_source.addItem('地理院 全国最新写真（シームレス・推奨）','GSI_SEAMLESS')
+        self.texture_source.addItem('地理院 全国最新写真 + 現在の2D表示（ベクタ重ね・推奨）','PHOTO_CANVAS')
         self.texture_source.addItem('3DビューのTerrain表示から自動','AUTO3D')
         self.texture_source.addItem('プロジェクト全体から衛星・航空写真 / XYZを自動選択','AUTO')
         self.texture_source.addItem('現在の2Dマップ表示（ベクタも含む）','CANVAS')
@@ -365,16 +376,17 @@ class MainDialog(QDialog):
                     continue
                 provider=''
                 try: provider=lyr.providerType()
-                except Exception: pass
+                except Exception as e:
+                    _log_suppressed('Non-critical operation failed', e)
                 candidates.append((nm,lyr.id(),provider))
-            except Exception:
-                pass
+            except Exception as e:
+                _log_suppressed('Non-critical operation failed', e)
         for nm,lid,provider in sorted(candidates,key=lambda x:x[0].lower()):
             self.texture_source.addItem(f'{nm}  [{provider}]',lid)
 
         idx=self.texture_source.findData(saved)
         if idx<0:
-            idx=self.texture_source.findData('GSI_SEAMLESS')
+            idx=self.texture_source.findData('PHOTO_CANVAS')
             if idx<0: idx=0
         self.texture_source.setCurrentIndex(idx)
         self.texture_source.blockSignals(False)
@@ -402,8 +414,8 @@ class MainDialog(QDialog):
             for lyr in QgsProject.instance().layerOrder():
                 if lyr.id() in wanted:
                     ordered.append(wanted.pop(lyr.id()))
-        except Exception:
-            pass
+        except Exception as e:
+            _log_suppressed('Non-critical operation failed', e)
         ordered.extend(wanted.values())
         return ordered
 
@@ -417,8 +429,8 @@ class MainDialog(QDialog):
                 if nm.startswith('dem_epsg') or 'geotiffの出力' in nm or 'quickdem' in nm:
                     continue
                 out.append(lyr)
-            except Exception:
-                pass
+            except Exception as e:
+                _log_suppressed('Non-critical operation failed', e)
         return out
 
     def _three_d_texture_candidates(self,dem):
@@ -470,7 +482,8 @@ class MainDialog(QDialog):
         nm=(lyr.name() or '').lower()
         provider=''
         try: provider=(lyr.providerType() or '').lower()
-        except Exception: pass
+        except Exception as e:
+            _log_suppressed('Non-critical operation failed', e)
         score=0
         # Strong semantic hints
         for key,pts in (
@@ -486,49 +499,75 @@ class MainDialog(QDialog):
             if key in nm: score+=pts
         return score
 
+
     def resolve_texture_layers(self,dem):
-        mode=self.texture_source.currentData() if hasattr(self,'texture_source') else 'GSI_SEAMLESS'
+        mode=self.texture_source.currentData() if hasattr(self,'texture_source') else 'PHOTO_CANVAS'
         project=QgsProject.instance()
-
-        if mode=='GSI_SEAMLESS':
-            lyr=self._gsi_seamless_photo_layer()
-            if lyr is not None:
-                return [lyr],'GSI_SEAMLESS:全国最新写真'
-            return [],'GSI_SEAMLESS:invalid'
-
-        if mode=='CANVAS':
-            try: src=list(self.iface.mapCanvas().mapSettings().layers())
-            except Exception: src=[]
-            layers=[]
+    
+        def _canvas_layers():
+            try:
+                canvas_settings=self.iface.mapCanvas().mapSettings()
+                src=list(canvas_settings.layers())
+            except Exception:
+                src=[]
+            out=[]
             for lyr in src:
                 try:
                     if lyr and lyr.isValid() and lyr.id()!=dem.id():
                         nm=(lyr.name() or '').lower()
                         if nm.startswith('dem_epsg') or 'geotiffの出力' in nm or 'quickdem' in nm:
                             continue
-                        layers.append(lyr)
-                except Exception:
-                    pass
+                        out.append(lyr)
+                except Exception as e:
+                    _log_suppressed('Canvas texture layer inspection failed', e)
+            self.log(
+                'CANVAS texture layer order: '
+                + (' | '.join(lyr.name() for lyr in out) if out else '(none)')
+            )
+            return out
+    
+        if mode=='GSI_SEAMLESS':
+            lyr=self._gsi_seamless_photo_layer()
+            if lyr is not None:
+                return [lyr],'GSI_SEAMLESS:全国最新写真'
+            return [],'GSI_SEAMLESS:invalid'
+    
+        if mode=='PHOTO_CANVAS':
+            layers=[]
+            base=self._gsi_seamless_photo_layer()
+            if base is not None:
+                layers.append(base)
+            overlays=_canvas_layers()
+            layers.extend(overlays)
+            self.log(
+                'PHOTO_CANVAS combined order: '
+                + (' | '.join(lyr.name() for lyr in layers) if layers else '(none)')
+            )
+            if layers:
+                return layers,'PHOTO_CANVAS:全国最新写真 + 現在の2D表示'
+            return [],'PHOTO_CANVAS:invalid'
+    
+        if mode=='CANVAS':
+            layers=_canvas_layers()
             return layers,'CANVAS'
-
-        if mode and mode not in ('GSI_SEAMLESS','AUTO','AUTO3D','CANVAS'):
+    
+        if mode and mode not in ('GSI_SEAMLESS','PHOTO_CANVAS','AUTO','AUTO3D','CANVAS'):
             lyr=project.mapLayer(mode)
             if lyr is not None and lyr.isValid():
                 return [lyr],lyr.name()
-
+    
         if mode=='AUTO3D':
             rasters=self._three_d_texture_candidates(dem)
             if rasters:
                 best=max(rasters,key=self._texture_candidate_score)
                 return [best],f'3D-AUTO:{best.name()}'
             # fall through to project-wide auto if necessary
-
+    
         rasters=self._raster_candidates(list(project.mapLayers().values()),dem)
         if not rasters:
             return [],'AUTO:none'
         best=max(rasters,key=self._texture_candidate_score)
         return [best],f'AUTO:{best.name()}'
-
     def spin(self,v):
         s=NoWheelDoubleSpinBox(); s.setRange(0,10000); s.setDecimals(1); s.setValue(v); s.setSuffix(' m'); return s
     def pick_root(self):
@@ -782,8 +821,8 @@ class MainDialog(QDialog):
             # can never contaminate the next conversion.
             try:
                 shutil.rmtree(temp_root, ignore_errors=True)
-            except Exception:
-                pass
+            except Exception as e:
+                _log_suppressed('Non-critical operation failed', e)
             raise
         candidate=output_path
         if not os.path.exists(candidate):
@@ -795,8 +834,8 @@ class MainDialog(QDialog):
         # Failure to clean is non-fatal because the path is never reused.
         try:
             shutil.rmtree(temp_root, ignore_errors=True)
-        except Exception:
-            pass
+        except Exception as e:
+            _log_suppressed('Non-critical operation failed', e)
         return candidate
 
     def unique_path(self,folder,stem,ext):
@@ -824,10 +863,74 @@ class MainDialog(QDialog):
         if not ls:return None
         if len(ls)==1:return ls[0]
         x=processing.run('native:mergevectorlayers',{'LAYERS':ls,'CRS':None,'OUTPUT':'TEMPORARY_OUTPUT'})['OUTPUT']; x.setName(name); return x
-    def reproj_vector(self,layer,epsg):
-        x=processing.run('native:reprojectlayer',{'INPUT':layer,'TARGET_CRS':QgsCoordinateReferenceSystem(f'EPSG:{epsg}'),'OUTPUT':'TEMPORARY_OUTPUT'})['OUTPUT']
+    def _repair_polygon_geometries(self, layer, label='vector layer'):
+        """Repair invalid polygon geometry before downstream Processing algorithms.
+
+        Some GSI BldA datasets contain polygons which QGIS/GEOS regards as invalid.
+        Processing algorithms such as retainfields may stop on those features even
+        though the attributes themselves are harmless.  For polygon layers we run
+        native:fixgeometries first.  METHOD=1 is preferred, with METHOD=0 as a
+        compatibility fallback.  Non-polygon layers are returned unchanged.
+        """
+        if layer is None or not layer.isValid():
+            raise RuntimeError(f'{label}: 有効なベクタレイヤではありません。')
+
+        if QgsWkbTypes.geometryType(layer.wkbType()) != QgsWkbTypes.PolygonGeometry:
+            return layer
+
+        before=layer.featureCount()
+        last_error=None
+        for method in (1,0):
+            try:
+                fixed=processing.run(
+                    'native:fixgeometries',
+                    {'INPUT':layer,'METHOD':method,'OUTPUT':'TEMPORARY_OUTPUT'}
+                )['OUTPUT']
+                if fixed is not None and fixed.isValid():
+                    after=fixed.featureCount()
+                    self.log(
+                        f'Geometry repair [{label}]: method={method}, '
+                        f'features {before}->{after}'
+                    )
+                    return fixed
+            except Exception as e:
+                last_error=e
+                self.log(
+                    f'Geometry repair [{label}] method={method} failed: {e}'
+                )
+
+        raise RuntimeError(
+            f'{label} の無効ジオメトリを修復できませんでした。'
+            + (f' ({last_error})' if last_error else '')
+        )
+
+    def reproj_vector(self,layer,epsg,progress_steps=None,label='ベクタ'):
+        # Classroom robustness: repair source polygons before any Processing step
+        # which may reject invalid GSI building geometry.
+        if progress_steps:
+            self.set_main_progress(progress_steps[0],f'{label}: ジオメトリを検査・修復中…')
+        layer=self._repair_polygon_geometries(layer,f'{label} source before reprojection')
+
+        if progress_steps:
+            self.set_main_progress(progress_steps[1],f'{label}: 平面直角座標系へ再投影中…')
+        x=processing.run(
+            'native:reprojectlayer',
+            {'INPUT':layer,'TARGET_CRS':QgsCoordinateReferenceSystem(f'EPSG:{epsg}'),'OUTPUT':'TEMPORARY_OUTPUT'}
+        )['OUTPUT']
+
+        # Reprojection can occasionally expose geometry validity problems again,
+        # so repair once more before retainfields (the 10/22 classroom failure point).
+        if progress_steps:
+            self.set_main_progress(progress_steps[2],f'{label}: 再投影後のジオメトリを再確認中…')
+        x=self._repair_polygon_geometries(x,f'{label} after reprojection')
+
+        if progress_steps:
+            self.set_main_progress(progress_steps[3],f'{label}: 属性を整理中…')
         fields=[f.name() for f in x.fields() if f.name().lower()!='fid']
-        return processing.run('native:retainfields',{'INPUT':x,'FIELDS':fields,'OUTPUT':'TEMPORARY_OUTPUT'})['OUTPUT']
+        return processing.run(
+            'native:retainfields',
+            {'INPUT':x,'FIELDS':fields,'OUTPUT':'TEMPORARY_OUTPUT'}
+        )['OUTPUT']
     def save(self,layer,path,name):
         base,ext=os.path.splitext(path)
         final=path if not os.path.exists(path) else self.unique_path(os.path.dirname(path),os.path.basename(base),ext)
@@ -884,8 +987,8 @@ class MainDialog(QDialog):
         x=layer
         try:
             x=processing.run('native:fixgeometries',{'INPUT':x,'METHOD':1,'OUTPUT':'TEMPORARY_OUTPUT'})['OUTPUT']
-        except Exception:
-            pass
+        except Exception as e:
+            _log_suppressed('Non-critical operation failed', e)
         if footprint is not None and footprint.isValid():
             x=processing.run('native:clip',{'INPUT':x,'OVERLAY':footprint,'OUTPUT':'TEMPORARY_OUTPUT'})['OUTPUT']
         else:
@@ -923,7 +1026,8 @@ class MainDialog(QDialog):
             try:
                 sym.setAltitudeClamping(Qgis.AltitudeClamping.Terrain)
                 sym.setAltitudeBinding(Qgis.AltitudeBinding.Centroid)
-            except Exception: pass
+            except Exception as e:
+                _log_suppressed('Non-critical operation failed', e)
             layer.setRenderer3D(QgsVectorLayer3DRenderer(sym)); layer.triggerRepaint()
         except Exception as e:self.log('3D auto setting skipped: '+str(e))
 
@@ -961,7 +1065,8 @@ class MainDialog(QDialog):
 
     def mark_generated(self,layer):
         try: layer.setCustomProperty('gsi2campus3d/generated',True)
-        except Exception: pass
+        except Exception as e:
+            _log_suppressed('Non-critical operation failed', e)
 
     def hide_source_layers(self,project,rootnode,input_root,dem_input_id):
         root_abs=os.path.abspath(input_root)
@@ -975,8 +1080,8 @@ class MainDialog(QDialog):
                     try:
                         src_abs=os.path.abspath(src)
                         hide=(src_abs==root_abs or src_abs.startswith(root_abs+os.sep))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log_suppressed('Non-critical operation failed', e)
             if hide and not bool(lyr.customProperty('gsi2campus3d/generated',False)):
                 node=rootnode.findLayer(lyr.id())
                 if node: node.setItemVisibilityChecked(False)
@@ -1194,83 +1299,258 @@ class MainDialog(QDialog):
                         f.write('l '+' '.join(map(str,inds))+'\n'); lines+=1
         return {'lines':lines,'vertices':idx}
 
+    def _texture_image_diagnostics(self, img):
+        """Return lightweight diagnostics for a rendered Terrain texture.
+
+        We sample a fixed grid instead of scanning every pixel.  A nearly uniform
+        image is a common symptom of an XYZ/WMS layer not being available yet or
+        of an empty canvas render.  This is diagnostic only; after retries, a
+        nearly uniform image is rejected so Blender never receives a misleading
+        white/blank Terrain_Texture.png.
+        """
+        try:
+            w=img.width(); h=img.height()
+            if w<=0 or h<=0:
+                return {'ok':False,'reason':'empty-image','samples':0,'unique_bins':0,'range':0}
+
+            colors=[]
+            # 11x11 interior sample grid avoids judging only border/background pixels.
+            n=11
+            for iy in range(n):
+                y=max(0,min(h-1,int(round((iy+0.5)*h/n))))
+                for ix in range(n):
+                    x=max(0,min(w-1,int(round((ix+0.5)*w/n))))
+                    c=img.pixelColor(x,y)
+                    # Quantize to 16-level bins so tiny antialiasing differences
+                    # do not make a blank image look diverse.
+                    colors.append((c.red()//16,c.green()//16,c.blue()//16,c.alpha()//32))
+
+            unique=len(set(colors))
+            rgb=[(r*16,g*16,b*16) for r,g,b,a in colors]
+            vals=[(r+g+b)/3.0 for r,g,b in rgb]
+            tonal_range=(max(vals)-min(vals)) if vals else 0.0
+
+            # 1-2 quantized colors and almost no tonal range is effectively blank.
+            suspicious=(unique<=2 and tonal_range<12.0)
+            return {
+                'ok':not suspicious,
+                'reason':'near-uniform' if suspicious else 'ok',
+                'samples':len(colors),
+                'unique_bins':unique,
+                'range':round(float(tonal_range),1),
+            }
+        except Exception as e:
+            self.log('Terrain texture diagnostics failed: '+str(e))
+            return {'ok':True,'reason':'diagnostics-unavailable','samples':0,'unique_bins':0,'range':0}
+
+
     def export_terrain_texture(self, dem, pkg, long_px=2048):
         """Render the selected Terrain image source over the DEM extent.
-
-        Default AUTO mode selects one raster/XYZ layer from the whole project,
-        preferring satellite/aerial/orthophoto-like names and WMS/XYZ providers.
-        This avoids the previous behavior where visible GSI vector layers were
-        baked instead of the 3D satellite imagery.
+    
+        v0.4.22 additions:
+        - New PHOTO_CANVAS mode: renders GSI seamless photo as the base and
+          composites the current 2D canvas layers on top, so white canvas
+          background does not replace aerial imagery.
+        - CANVAS / PHOTO_CANVAS continue to preserve current 2D style overrides.
+        - Rendering uses QgsMapRendererSequentialJob and retries suspiciously
+          blank images before rejecting them.
         """
         path=os.path.join(pkg,'Terrain_Texture.png')
-        # Never leave a stale image from an earlier export. If this run fails,
-        # the file must be absent so Blender/Explorer cannot mistake old output
-        # for the new package.
+        self._last_texture_diagnostics={}
+    
         try:
             if os.path.exists(path):
                 os.remove(path)
                 self.log('Removed stale Terrain_Texture.png before regeneration.')
         except Exception as e:
             self.log('Could not remove stale Terrain_Texture.png: '+str(e))
-
+    
         layers,source_desc=self.resolve_texture_layers(dem)
-        diagnostics=[]
+        layer_diag=[]
         for lyr in layers:
             try:
                 provider=lyr.providerType()
             except Exception:
                 provider=''
-            diagnostics.append(f'{lyr.name()} [{lyr.__class__.__name__}/{provider}]')
-
+            try:
+                visible_name=lyr.name()
+            except Exception:
+                visible_name='(unnamed)'
+            layer_diag.append(f'{visible_name} [{lyr.__class__.__name__}/{provider}]')
+    
         self.log('Terrain texture source: ' + source_desc)
-        self.log('Terrain texture layers: ' + ('; '.join(diagnostics) if diagnostics else '(none)'))
-
+        self.log('Terrain texture layers: ' + ('; '.join(layer_diag) if layer_diag else '(none)'))
+    
         if not layers:
-            self.log('Terrain texture export skipped: no suitable raster/XYZ source found.')
+            self._last_texture_diagnostics={
+                'status':'failed','reason':'no-layers','source':source_desc,'attempts':0
+            }
+            self.log('Terrain texture export skipped: no suitable source layer found.')
             return None, []
-
+    
         e=dem.extent(); w=e.width(); h=e.height()
         long_px=max(512,int(long_px))
         if w>=h:
             pxw=long_px; pxh=max(64,int(round(long_px*h/w)))
         else:
             pxh=long_px; pxw=max(64,int(round(long_px*w/h)))
-
-        ms=QgsMapSettings()
-        ms.setLayers(layers)
-        ms.setDestinationCrs(dem.crs())
-        ms.setExtent(e)
-        ms.setOutputSize(QSize(pxw,pxh))
-        ms.setOutputDpi(96)
+    
+        mode=self.texture_source.currentData() if hasattr(self,'texture_source') else 'PHOTO_CANVAS'
+        canvas_settings=None
+        if mode in ('CANVAS','PHOTO_CANVAS'):
+            try:
+                canvas_settings=self.iface.mapCanvas().mapSettings()
+            except Exception as ex:
+                self.log('Could not read current canvas settings: '+str(ex))
+    
+        def _prepare_map_settings(render_layers, transparent=False, preserve_canvas=False):
+            ms=QgsMapSettings()
+            ms.setLayers(render_layers)
+            ms.setDestinationCrs(dem.crs())
+            ms.setExtent(e)
+            ms.setOutputSize(QSize(pxw,pxh))
+            ms.setOutputDpi(96)
+    
+            if preserve_canvas and canvas_settings is not None:
+                try:
+                    ms.setFlags(canvas_settings.flags())
+                except Exception as ex:
+                    self.log('Canvas flags copy skipped: '+str(ex))
+                try:
+                    ms.setLayerStyleOverrides(canvas_settings.layerStyleOverrides())
+                except Exception as ex:
+                    self.log('Canvas style override copy skipped: '+str(ex))
+                try:
+                    ms.setTransformContext(canvas_settings.transformContext())
+                except Exception as ex:
+                    self.log('Canvas transform context copy skipped: '+str(ex))
+            else:
+                try:
+                    ms.setTransformContext(QgsProject.instance().transformContext())
+                except Exception as ex:
+                    self.log('Default transform context copy skipped: '+str(ex))
+    
+            try:
+                if transparent:
+                    ms.setBackgroundColor(QColor(0,0,0,0))
+                elif preserve_canvas and canvas_settings is not None:
+                    ms.setBackgroundColor(canvas_settings.backgroundColor())
+                else:
+                    try:
+                        cms=self.iface.mapCanvas().mapSettings()
+                        ms.setBackgroundColor(cms.backgroundColor())
+                    except Exception:
+                        pass
+            except Exception as ex:
+                self.log('Map background setup skipped: '+str(ex))
+            return ms
+    
+        def _render_once(render_layers, transparent=False, preserve_canvas=False):
+            ms=_prepare_map_settings(render_layers, transparent=transparent, preserve_canvas=preserve_canvas)
+            job=QgsMapRendererSequentialJob(ms)
+            job.start()
+            job.waitForFinished()
+            return job.renderedImage()
+    
+        last_diag=None
+        max_attempts=3 if mode in ('CANVAS','PHOTO_CANVAS','GSI_SEAMLESS','AUTO','AUTO3D') else 2
+    
+        for attempt in range(1,max_attempts+1):
+            QApplication.processEvents()
+            self.log(f'Terrain texture render attempt {attempt}/{max_attempts}: {pxw}x{pxh}')
+    
+            if mode=='PHOTO_CANVAS':
+                base_layers=layers[:1]
+                overlay_layers=layers[1:]
+                base_img=_render_once(base_layers, transparent=False, preserve_canvas=False)
+                if base_img is None or base_img.isNull():
+                    last_diag={'ok':False,'reason':'null-base-image','samples':0,'unique_bins':0,'range':0}
+                    self.log(f'Terrain texture attempt {attempt}: base image is null.')
+                    QApplication.processEvents()
+                    continue
+                img=base_img.copy()
+                if overlay_layers:
+                    overlay_img=_render_once(overlay_layers, transparent=True, preserve_canvas=True)
+                    if overlay_img is None or overlay_img.isNull():
+                        self.log(f'Terrain texture attempt {attempt}: overlay image is null; using base photo only.')
+                    else:
+                        painter=QPainter(img)
+                        painter.drawImage(0,0,overlay_img)
+                        painter.end()
+            else:
+                img=_render_once(layers, transparent=False, preserve_canvas=(mode=='CANVAS'))
+                if img is None or img.isNull():
+                    last_diag={'ok':False,'reason':'null-image','samples':0,'unique_bins':0,'range':0}
+                    self.log(f'Terrain texture attempt {attempt}: rendered image is null.')
+                    QApplication.processEvents()
+                    continue
+    
+            last_diag=self._texture_image_diagnostics(img)
+            self.log(
+                f"Terrain texture attempt {attempt}: "
+                f"diagnostic={last_diag.get('reason')}, "
+                f"unique_bins={last_diag.get('unique_bins')}, "
+                f"range={last_diag.get('range')}"
+            )
+    
+            if not last_diag.get('ok',True):
+                QApplication.processEvents()
+                continue
+    
+            ok=img.save(path,'PNG')
+            if ok and os.path.exists(path) and os.path.getsize(path)>0:
+                self._last_texture_diagnostics={
+                    'status':'ok',
+                    'reason':last_diag.get('reason','ok'),
+                    'source':source_desc,
+                    'attempts':attempt,
+                    'width':pxw,'height':pxh,
+                    'unique_bins':last_diag.get('unique_bins'),
+                    'tonal_range':last_diag.get('range'),
+                    'layers':[x.name() for x in layers],
+                }
+                self.log(
+                    f"Terrain texture exported: {path} ({pxw}x{pxh}) "
+                    f"source={source_desc} attempts={attempt}"
+                )
+                return path,[x.name() for x in layers]
+    
+            self.log(f'Terrain texture attempt {attempt}: PNG save failed.')
+            QApplication.processEvents()
+    
         try:
-            ms.setTransformContext(QgsProject.instance().transformContext())
-        except Exception:
-            pass
-
-        # White background is useful only for vector/canvas mode.  A selected
-        # imagery layer should cover the extent itself.
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception as ex:
+            self.log('Failed to remove rejected Terrain texture: '+str(ex))
+    
+        self._last_texture_diagnostics={
+            'status':'failed',
+            'reason':(last_diag or {}).get('reason','render-failed'),
+            'source':source_desc,
+            'attempts':max_attempts,
+            'width':pxw,'height':pxh,
+            'unique_bins':(last_diag or {}).get('unique_bins'),
+            'tonal_range':(last_diag or {}).get('range'),
+            'layers':[x.name() for x in layers],
+        }
+        self.log(
+            'Terrain texture export failed after retries: '
+            + json.dumps(self._last_texture_diagnostics,ensure_ascii=False)
+        )
+        return None,[x.name() for x in layers]
+    def set_main_progress(self, value, status=''):
+        """Update main data-preparation progress and repaint immediately."""
         try:
-            cms=self.iface.mapCanvas().mapSettings()
-            ms.setBackgroundColor(cms.backgroundColor())
-            ms.setFlag(QgsMapSettings.Antialiasing, True)
-        except Exception:
-            pass
-
-        job=QgsMapRendererParallelJob(ms)
-        job.start()
-        job.waitForFinished()
-        img=job.renderedImage()
-        if img is None or img.isNull():
-            self.log('Terrain texture export failed: rendered image is null.')
-            return None,[x.name() for x in layers]
-
-        ok=img.save(path,'PNG')
-        if not ok or not os.path.exists(path):
-            self.log('Terrain texture export failed: PNG save did not create the file.')
-            return None,[x.name() for x in layers]
-
-        self.log(f"Terrain texture exported: {path} ({pxw}x{pxh}) source={source_desc}")
-        return path,[x.name() for x in layers]
+            value=max(0,min(100,int(round(value))))
+            if hasattr(self,'progress'):
+                self.progress.setFormat('%p%')
+                self.progress.setValue(value)
+            if status and hasattr(self,'main_status'):
+                self.main_status.setText(status)
+            QApplication.processEvents()
+        except Exception as e:
+            _log_suppressed('Main progress UI update failed', e)
 
     def set_blender_progress(self, value, status=''):
         """Update Blender-export progress and keep the QGIS UI responsive."""
@@ -1282,8 +1562,8 @@ class MainDialog(QDialog):
             if status and hasattr(self,'blender_status'):
                 self.blender_status.setText(status)
             QApplication.processEvents()
-        except Exception:
-            pass
+        except Exception as e:
+            _log_suppressed('Non-critical operation failed', e)
 
     def export_blender_package(self, out_folder, dem, building_items, road_layer, epsg, scale_denominator, terrain_resolution, vertical_scale=1.0, interpolate_boundary=True, fill_nodata=False, sea_floor_z=-5.0, export_texture=True, texture_px=2048):
         # Progress is stage-based rather than elapsed-time based. It is intended
@@ -1336,7 +1616,17 @@ class MainDialog(QDialog):
             tex_path,texture_layers=self.export_terrain_texture(dem,pkg,texture_px)
             if tex_path:
                 files['Terrain_Texture']=os.path.basename(tex_path)
-                stats['Terrain_Texture']={'layers':texture_layers,'long_side_px':int(texture_px)}
+                stats['Terrain_Texture']={
+                    'layers':texture_layers,
+                    'long_side_px':int(texture_px),
+                    'diagnostics':getattr(self,'_last_texture_diagnostics',{})
+                }
+            else:
+                stats['Terrain_Texture']={
+                    'layers':texture_layers,
+                    'long_side_px':int(texture_px),
+                    'diagnostics':getattr(self,'_last_texture_diagnostics',{})
+                }
             self.set_blender_progress(96,'Terrain画像処理 完了')
         else:
             self.set_blender_progress(96,'Terrain画像出力OFF — スキップ')
@@ -1375,14 +1665,14 @@ class MainDialog(QDialog):
                 if c.isVisible():
                     visible.append(c)
                     continue
-            except Exception:
-                pass
+            except Exception as e:
+                _log_suppressed('Non-critical operation failed', e)
             try:
                 w=c.window()
                 if w is not None and w.isVisible():
                     visible.append(c)
-            except Exception:
-                pass
+            except Exception as e:
+                _log_suppressed('Non-critical operation failed', e)
 
         return visible[-1] if visible else canvases[-1]
 
@@ -1454,7 +1744,7 @@ class MainDialog(QDialog):
         return True
 
     def export_current_blender_package(self):
-        current_source=self.texture_source.currentData() if hasattr(self,'texture_source') else 'GSI_SEAMLESS'
+        current_source=self.texture_source.currentData() if hasattr(self,'texture_source') else 'PHOTO_CANVAS'
         self._saved_texture_source=current_source
         self.refresh_texture_sources()
         idx=self.texture_source.findData(current_source)
@@ -1533,6 +1823,8 @@ class MainDialog(QDialog):
                 + (f"（{manifest['stats']['Terrain'].get('sea_floor_z_m',0):.1f} m）\n" if manifest['stats']['Terrain'].get('fill_nodata') else "\n")
                 + (
                     f"Terrain画像: {manifest['files'].get('Terrain_Texture')} / ソース: {self.texture_source.currentText()}\n"
+                    + "使用レイヤ: " + ", ".join(manifest['stats'].get('Terrain_Texture',{}).get('layers',[])) + "\n"
+                    + f"描画試行: {manifest['stats'].get('Terrain_Texture',{}).get('diagnostics',{}).get('attempts',1)} 回\n"
                     if self.export_texture.isChecked() and manifest['files'].get('Terrain_Texture')
                     else ("Terrain画像: 今回は作成されませんでした（古いPNGも削除済み。画像ソース選択またはログ「Terrain texture source」を確認）\n"
                           if self.export_texture.isChecked()
@@ -1545,8 +1837,8 @@ class MainDialog(QDialog):
                 self.blender_progress.setFormat('エラー')
                 self.blender_status.setText('Blenderパッケージ出力に失敗しました')
                 QApplication.processEvents()
-            except Exception:
-                pass
+            except Exception as e:
+                _log_suppressed('Non-critical operation failed', e)
             QMessageBox.critical(self,'GSI2Campus3D','Blenderパッケージ出力に失敗しました。\n'+str(e))
         finally:
             self.export_blender_btn.setEnabled(True)
@@ -1579,8 +1871,8 @@ class MainDialog(QDialog):
                     if sc == 'Ctrl+Alt+M':
                         native_action = a
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log_suppressed('Non-critical operation failed', e)
 
             # Fallback for customized shortcuts: match English/Japanese menu text.
             if native_action is None:
@@ -1592,8 +1884,8 @@ class MainDialog(QDialog):
                         if ('new' in t and 'map' in t) or ('新規' in t and ('マップ' in t or '地図' in t)):
                             native_action = a
                             break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log_suppressed('Non-critical operation failed', e)
 
             if native_action is None:
                 raise RuntimeError(
@@ -1640,8 +1932,8 @@ class MainDialog(QDialog):
                     terrain.setElevationOffset(0.0)
                     try:
                         terrain.setSkirtHeight(10.0)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log_suppressed('Non-critical operation failed', e)
 
                     settings.setTerrainSettings(terrain)
                     settings.setTerrainRenderingEnabled(True)
@@ -1655,8 +1947,8 @@ class MainDialog(QDialog):
                         except Exception:
                             try:
                                 canvas.resetView()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                _log_suppressed('Non-critical operation failed', e)
 
                     QTimer.singleShot(500, _frame)
                     self.log(
@@ -1685,7 +1977,7 @@ class MainDialog(QDialog):
         if not dem_dir or not os.path.isdir(dem_dir): QMessageBox.warning(self,'GSI2Campus3D','DEM XMLフォルダを指定してください。'); return
         dem_xmls=self.collect_dem_xmls(dem_dir, out)
         if not dem_xmls: QMessageBox.warning(self,'GSI2Campus3D','指定フォルダ内にDEM XMLが見つかりません。'); return
-        os.makedirs(out,exist_ok=True); z,epsg=self.zone.currentData(); self.go.setEnabled(False); self.progress.setValue(3)
+        os.makedirs(out,exist_ok=True); z,epsg=self.zone.currentData(); self.go.setEnabled(False); self.set_main_progress(3,'処理を開始しています…')
         try:
             project=QgsProject.instance(); project.setCrs(QgsCoordinateReferenceSystem(f'EPSG:{epsg}'))
             rootnode=project.layerTreeRoot()
@@ -1698,21 +1990,28 @@ class MainDialog(QDialog):
             # DEM first: QuickDEM4JP can consume a folder containing multiple XMLs.
             # Ask it to create one GeoTIFF directly in the selected plane rectangular CRS.
             dem_out=self.unique_path(out,f'DEM_EPSG{epsg}','.tif')
-            self.progress.setValue(8)
+            self.set_main_progress(8,f'DEMを変換中…（XML {len(dem_xmls)} ファイル）')
             dem_out=self.quickdem_batch(dem_dir,epsg,dem_out)
             dem=QgsRasterLayer(dem_out,f'DEM_EPSG{epsg}');
             if not dem.isValid(): raise RuntimeError('QuickDEM4JPで生成したDEMを読み込めませんでした。')
-            self.mark_generated(dem); project.addMapLayer(dem,False); g_t.addLayer(dem); extent=dem.extent(); self.progress.setValue(22)
+            self.mark_generated(dem); project.addMapLayer(dem,False); g_t.addLayer(dem); extent=dem.extent()
+            self.set_main_progress(22,'DEM完了。建物・道路データを検索中…')
             bfiles=self.find_files(root,'BldA'); rfiles=self.find_files(root,'RdEdg')
             if not bfiles: raise RuntimeError('BldA XML/GML が見つかりません。')
-            b=self.reproj_vector(self.load_union(bfiles,'BldA_source'),epsg)
+            self.set_main_progress(23,f'建物データを読み込み中…（{len(bfiles)} ファイル）')
+            b=self.reproj_vector(
+                self.load_union(bfiles,'BldA_source'),epsg,
+                progress_steps=(24,27,30,32),label='建物'
+            )
             self.log(f'Buildings after reprojection: {b.featureCount()}')
             if self.clip.isChecked():
                 # v0.2.6 polygonized DEM masks could become empty/misaligned on some
                 # QGIS/GDAL builds. Use the proven DEM extent clip first, then reject
                 # buildings whose representative point has no valid DEM sample.
+                self.set_main_progress(34,'建物をDEM範囲で切り抜き中…')
                 b=self.clip_extent(b,dem.extent())
                 self.log(f'Buildings after DEM extent clip: {b.featureCount()}')
+                self.set_main_progress(37,f'建物の標高有効性を確認中…（{b.featureCount()} 件）')
                 b=self.filter_buildings_with_valid_dem(b,dem)
             threshold=self.area.value(); embed=self.embed.value()
             generated_vectors=[]
@@ -1721,13 +2020,20 @@ class MainDialog(QDialog):
             specs=[('Building_Normal_Small',f'"type" = \'普通建物\' AND $area < {threshold}',self.h_ns.value()),('Building_Normal_Large',f'"type" = \'普通建物\' AND $area >= {threshold}',self.h_nl.value()),('Building_Solid_Small',f'"type" = \'堅ろう建物\' AND $area < {threshold}',self.h_ss.value()),('Building_Solid_Large',f'"type" = \'堅ろう建物\' AND $area >= {threshold}',self.h_sl.value())]
             for i,(name,expr,h) in enumerate(specs):
                 x=processing.run('native:extractbyexpression',{'INPUT':b,'EXPRESSION':expr,'OUTPUT':'TEMPORARY_OUTPUT'})['OUTPUT']; lyr=self.save(x,os.path.join(out,name+'.gpkg'),name)
-                self.mark_generated(lyr); project.addMapLayer(lyr,False); g_b.addLayer(lyr); self.set3d(lyr,h,embed); generated_vectors.append(lyr); blender_buildings.append((name,lyr,h,embed)); self.progress.setValue(35+i*10)
+                self.mark_generated(lyr); project.addMapLayer(lyr,False); g_b.addLayer(lyr); self.set3d(lyr,h,embed); generated_vectors.append(lyr); blender_buildings.append((name,lyr,h,embed))
+                self.set_main_progress(45+i*8,f'建物を4分類中… {i+1}/4  {name}')
             if rfiles:
-                r=self.reproj_vector(self.load_union(rfiles,'RdEdg_source'),epsg)
-                if self.clip.isChecked(): r=self.clip_extent(r,dem.extent())
+                self.set_main_progress(76,f'道路データを読み込み中…（{len(rfiles)} ファイル）')
+                r=self.reproj_vector(
+                    self.load_union(rfiles,'RdEdg_source'),epsg,
+                    progress_steps=(78,80,82,84),label='道路'
+                )
+                if self.clip.isChecked():
+                    self.set_main_progress(86,'道路をDEM範囲で切り抜き中…')
+                    r=self.clip_extent(r,dem.extent())
                 rl=self.save(r,os.path.join(out,f'RdEdg_EPSG{epsg}.gpkg'),f'RdEdg_EPSG{epsg}'); self.mark_generated(rl); project.addMapLayer(rl,False); g_i.addLayer(rl); generated_vectors.append(rl); blender_road=rl
             self._last_dem=dem; self._last_buildings=blender_buildings; self._last_road=blender_road; self._last_epsg=epsg; self._last_out=out
-            self.progress.setValue(88)
+            self.set_main_progress(90,'生成レイヤを整理中…')
             if self.hide_sources.isChecked():
                 self.hide_source_layers(project,rootnode,root,None)
             # Save a simple handoff file for later Blender add-on work.
@@ -1738,13 +2044,22 @@ class MainDialog(QDialog):
             auto3d_ok=False; auto3d_err=''
             if False:  # auto 3D launch intentionally disabled in v0.4.0
                 auto3d_ok,auto3d_err=self.open_configured_3d_view(project,dem,generated_vectors,epsg)
-            self.progress.setValue(100)
-            msg=f'v0.4.18 処理完了\n\n第{z}系 / EPSG:{epsg}\nDEM XMLフォルダをQuickDEM4JPで一括変換しました。\n建物・道路をDEM範囲で切り抜き、建物はDEM有効値で追加検証しました。\n建物を4分類しました。'
+            self.set_main_progress(100,'処理完了')
+            # Ensure Windows/Qt repaints the completed bar before opening the modal dialog.
+            QApplication.processEvents()
+            msg=f'v0.4.22-dev2 処理完了\n\n第{z}系 / EPSG:{epsg}\nDEM XMLフォルダをQuickDEM4JPで一括変換しました。\n建物・道路をDEM範囲で切り抜き、建物はDEM有効値で追加検証しました。\n建物を4分類しました。'
             if False:  # auto 3D launch intentionally disabled in v0.4.0
                 if auto3d_ok: msg += f'\n\n3Dビューを開き、DEM_EPSG{epsg} をTerrainに自動設定しました。'
                 else: msg += f'\n\n3Dビュー自動設定だけ失敗しました。データ生成は完了しています。\n{auto3d_err}'
             msg += '\n\nQGIS 3Dで確認後、必要ならZ方向倍率を決めて［現在の生成レイヤからBlenderパッケージを出力］を押してください。'
             QMessageBox.information(self,'GSI2Campus3D',msg)
         except Exception as e:
-            self.log(traceback.format_exc()); QMessageBox.critical(self,'GSI2Campus3D','処理に失敗しました。\n'+str(e)+'\n\n表示 → パネル → ログメッセージも確認してください。')
+            self.log(traceback.format_exc())
+            try:
+                self.progress.setFormat('エラー')
+                self.main_status.setText('処理に失敗しました')
+                QApplication.processEvents()
+            except Exception as ui_e:
+                _log_suppressed('Main error UI update failed', ui_e)
+            QMessageBox.critical(self,'GSI2Campus3D','処理に失敗しました。\n'+str(e)+'\n\n表示 → パネル → ログメッセージも確認してください。')
         finally:self.go.setEnabled(True)
