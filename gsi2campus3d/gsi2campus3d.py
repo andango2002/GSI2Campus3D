@@ -6,7 +6,7 @@ from qgis.PyQt.QtGui import QKeySequence, QIcon, QColor, QPainter
 from qgis.PyQt.QtWidgets import (QAction,QDialog,QVBoxLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,
     QFileDialog,QComboBox,QCheckBox,QDoubleSpinBox,QMessageBox,QGroupBox,QFormLayout,QProgressBar,QApplication,QScrollArea,QWidget)
 from qgis.core import (QgsProject,QgsVectorLayer,QgsRasterLayer,QgsCoordinateReferenceSystem,
-    QgsRectangle,QgsMessageLog,Qgis,QgsPointXY,QgsWkbTypes,QgsMapSettings,QgsMapRendererSequentialJob)
+    QgsCoordinateTransform,QgsRectangle,QgsMessageLog,Qgis,QgsPointXY,QgsWkbTypes,QgsMapSettings,QgsMapRendererSequentialJob)
 import processing
 
 ZONES=[(i,6668+i) for i in range(1,20)]
@@ -88,7 +88,7 @@ class NoWheelComboBox(QComboBox):
 class MainDialog(QDialog):
     def __init__(self,iface):
         self.iface=iface
-        super().__init__(iface.mainWindow()); self.setWindowTitle('Campus3D Workflow [A] — GSI2Campus3D v0.4.22-dev2'); self.resize(880,740)
+        super().__init__(iface.mainWindow()); self.setWindowTitle('Campus3D Workflow [A] — GSI2Campus3D v0.4.23'); self.resize(880,740)
 
         # Outer layout + vertically scrollable content.
         # This keeps the branded full UI usable on 1920x1080 and smaller screens
@@ -578,6 +578,112 @@ class MainDialog(QDialog):
         p=QFileDialog.getExistingDirectory(self,'DEM XMLフォルダを選択')
         if p:
             self.dem_dir_edit.setText(p); self.save_settings()
+
+    def _extract_gsi_mesh_codes(self, paths):
+        """Extract Japanese standard regional mesh codes from GSI source filenames.
+
+        GSI 基盤地図情報の代表的な命名規則:
+          基本項目: FG-GML-ppppqq-...               -> 2次メッシュ (6桁)
+          DEM 1m/5m: FG-GML-pppp-qq-rr-DEM...      -> 3次メッシュ (8桁)
+          DEM 10m:   FG-GML-pppp-qq-DEM...         -> 2次メッシュ (6桁)
+
+        Returns both the normalized combined codes and typed code lists.
+        Unknown filenames are ignored rather than guessed.
+        """
+        second=set()
+        third=set()
+
+        # Accept both hyphenated and compact forms used by GSI downloads.
+        dem3_pat=re.compile(
+            r'^FG-GML-(?P<p>\d{4})-(?P<q>\d{2})-(?P<r>\d{2})-DEM',
+            re.IGNORECASE
+        )
+        dem2_pat=re.compile(
+            r'^FG-GML-(?P<p>\d{4})-(?P<q>\d{2})-DEM',
+            re.IGNORECASE
+        )
+        basic_pat=re.compile(
+            r'^FG-GML-(?P<pq>\d{6})-(?!\d)',
+            re.IGNORECASE
+        )
+
+        for path in paths or []:
+            base=os.path.basename(str(path))
+            m=dem3_pat.match(base)
+            if m:
+                p,q,r=m.group('p'),m.group('q'),m.group('r')
+                second.add(p+q)
+                third.add(p+q+r)
+                continue
+            m=dem2_pat.match(base)
+            if m:
+                second.add(m.group('p')+m.group('q'))
+                continue
+            m=basic_pat.match(base)
+            if m:
+                second.add(m.group('pq'))
+
+        second_sorted=sorted(second)
+        third_sorted=sorted(third)
+        # Generic mesh_codes keeps the most spatially specific codes available.
+        mesh_codes=third_sorted if third_sorted else second_sorted
+        return {
+            'mesh_codes':mesh_codes,
+            'second_mesh_codes':second_sorted,
+            'third_mesh_codes':third_sorted,
+        }
+
+    def _build_geolocation_manifest(self, extent, epsg):
+        """Build non-fatal geolocation metadata for the Blender manifest."""
+        info={
+            'mesh_codes':[],
+            'second_mesh_codes':[],
+            'third_mesh_codes':[],
+            'extent_wgs84':{
+                'west':None,'south':None,'east':None,'north':None
+            },
+            'center_wgs84':{
+                'latitude':None,'longitude':None
+            },
+            'source_crs':f'EPSG:{epsg}',
+            'projected_crs':f'EPSG:{epsg}',
+        }
+
+        try:
+            sources=getattr(self,'_last_source_files',[]) or []
+            info.update(self._extract_gsi_mesh_codes(sources))
+            self.log(
+                'Geolocation mesh codes: '
+                + (', '.join(info['mesh_codes']) if info['mesh_codes'] else '(not detected)')
+            )
+        except Exception as e:
+            self.log('Geolocation mesh-code detection warning: '+str(e))
+
+        try:
+            src_crs=QgsCoordinateReferenceSystem(f'EPSG:{epsg}')
+            dst_crs=QgsCoordinateReferenceSystem('EPSG:4326')
+            transform=QgsCoordinateTransform(src_crs,dst_crs,QgsProject.instance())
+            wgs_extent=transform.transformBoundingBox(extent)
+            west=float(wgs_extent.xMinimum())
+            east=float(wgs_extent.xMaximum())
+            south=float(wgs_extent.yMinimum())
+            north=float(wgs_extent.yMaximum())
+            info['extent_wgs84']={
+                'west':west,'south':south,'east':east,'north':north
+            }
+            info['center_wgs84']={
+                'latitude':(south+north)/2.0,
+                'longitude':(west+east)/2.0
+            }
+            self.log(
+                'Geolocation center WGS84: '
+                f"{info['center_wgs84']['latitude']:.6f}, "
+                f"{info['center_wgs84']['longitude']:.6f}"
+            )
+        except Exception as e:
+            self.log('Geolocation WGS84 transform warning: '+str(e))
+
+        return info
 
     def collect_dem_xmls(self, dem_dir, output_dir=None):
         """Collect only genuine GSI DEM source XML files recursively.
@@ -1638,6 +1744,14 @@ class MainDialog(QDialog):
             'extent':{'xmin':e.xMinimum(),'xmax':e.xMaximum(),'ymin':e.yMinimum(),'ymax':e.yMaximum()},
             'real_size_m':{'x':e.width(),'y':e.height()},
             'model_size':{'x':e.width()/float(scale_denominator),'y':e.height()/float(scale_denominator),'z_multiplier':float(vertical_scale)},
+            'vertical_scaling':{
+                'visual_vertical_scale':float(vertical_scale),
+                'physical_vertical_scale':1.0,
+                'terrain_exaggerated':bool(abs(float(vertical_scale)-1.0)>1e-9),
+                'buildings_real_scale':True,
+                'geometry_mode':'terrain_exaggerated_buildings_real_scale'
+            },
+            'geolocation':self._build_geolocation_manifest(e,epsg),
             'files':files,'stats':stats,
             'notes':'OBJ files share one local origin and horizontal scale. vertical_scale exaggerates terrain/elevation only, matching QGIS 3D view behavior; building extrusion height and embed depth remain at true model scale. Terrain contains normalized UV coordinates. A visible QGIS background raster/XYZ texture may be embedded as Terrain_Texture.png. Terrain NoData boundary may be midpoint-interpolated for better coastline fit. Optionally NoData is filled at a user-specified sea-floor elevation to create a broad rectangular terrain for a separate Blender water plane.'
         }
@@ -1997,6 +2111,9 @@ class MainDialog(QDialog):
             self.mark_generated(dem); project.addMapLayer(dem,False); g_t.addLayer(dem); extent=dem.extent()
             self.set_main_progress(22,'DEM完了。建物・道路データを検索中…')
             bfiles=self.find_files(root,'BldA'); rfiles=self.find_files(root,'RdEdg')
+            # Preserve source filenames for Blender-package geolocation metadata.
+            # This is intentionally metadata-only and does not alter geometry processing.
+            self._last_source_files=list(dem_xmls)+list(bfiles)+list(rfiles)
             if not bfiles: raise RuntimeError('BldA XML/GML が見つかりません。')
             self.set_main_progress(23,f'建物データを読み込み中…（{len(bfiles)} ファイル）')
             b=self.reproj_vector(
