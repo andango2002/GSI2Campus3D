@@ -116,7 +116,7 @@ class MainDialog(QDialog):
             '&nbsp;&nbsp;<span style="font-size:12pt; font-weight:700; color:#ffffff;">GSI2Campus3D</span><br>'
             '<span style="font-size:9pt; color:#d7dde2;">GSI data preparation for Blender</span>'
             '&nbsp;&nbsp;|&nbsp;&nbsp;'
-            '<span style="font-size:8.5pt; color:#b8c0c7;">Est. 2026 | Powered by IINO Lab. | Plugin v0.4.22-dev2</span><br>'
+            '<span style="font-size:8.5pt; color:#b8c0c7;">Est. 2026 | Powered by IINO Lab. | Plugin v0.4.23</span><br>'
             '<span style="font-size:8.8pt; font-weight:600; color:#e8ecef;">[A] QGIS  →  [B] Blender  →  GLB  →  CampusMint</span>'
             '</div>'
         )
@@ -190,7 +190,7 @@ class MainDialog(QDialog):
         bxf.addRow('処理状況',self.blender_status)
         bxf.addRow(QLabel('QGIS 3Dで縦倍率を調整すると、連動ON時はBlender倍率へ自動反映。'))
         root.addWidget(bx)
-        root.addWidget(QLabel('v0.4.22: 航空写真＋現在の2D表示の合成Terrain画像モードを追加しました。'))
+        root.addWidget(QLabel('v0.4.23: 航空写真＋現在の2D表示の合成Terrain画像モードを追加しました。'))
         root.addWidget(QLabel('3D確認: 表示 → 3Dマップビュー → 新規3Dマップビュー'))
         self._last_dem=None; self._last_buildings=[]; self._last_road=None; self._last_epsg=None; self._last_out=None
         self._last_3d_zscale_seen=None
@@ -1453,7 +1453,7 @@ class MainDialog(QDialog):
     def export_terrain_texture(self, dem, pkg, long_px=2048):
         """Render the selected Terrain image source over the DEM extent.
     
-        v0.4.22 additions:
+        v0.4.23 additions:
         - New PHOTO_CANVAS mode: renders GSI seamless photo as the base and
           composites the current 2D canvas layers on top, so white canvas
           background does not replace aerial imagery.
@@ -2164,7 +2164,7 @@ class MainDialog(QDialog):
             self.set_main_progress(100,'処理完了')
             # Ensure Windows/Qt repaints the completed bar before opening the modal dialog.
             QApplication.processEvents()
-            msg=f'v0.4.22-dev2 処理完了\n\n第{z}系 / EPSG:{epsg}\nDEM XMLフォルダをQuickDEM4JPで一括変換しました。\n建物・道路をDEM範囲で切り抜き、建物はDEM有効値で追加検証しました。\n建物を4分類しました。'
+            msg=f'v0.4.23 処理完了\n\n第{z}系 / EPSG:{epsg}\nDEM XMLフォルダをQuickDEM4JPで一括変換しました。\n建物・道路をDEM範囲で切り抜き、建物はDEM有効値で追加検証しました。\n建物を4分類しました。'
             if False:  # auto 3D launch intentionally disabled in v0.4.0
                 if auto3d_ok: msg += f'\n\n3Dビューを開き、DEM_EPSG{epsg} をTerrainに自動設定しました。'
                 else: msg += f'\n\n3Dビュー自動設定だけ失敗しました。データ生成は完了しています。\n{auto3d_err}'
