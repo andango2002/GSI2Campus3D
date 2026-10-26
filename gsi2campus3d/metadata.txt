@@ -3,7 +3,7 @@ name=GSI2Campus3D
 qgisMinimumVersion=3.34
 qgisMaximumVersion=3.99
 description=Prepare GSI Fundamental Geospatial Data for QGIS 3D / Blender workflows.
-version=0.4.23
+version=0.4.24
 author=Akinaru Iino / OpenAI prototype
 email=aiino@abe.niit.ac.jp
 about=Prepare GSI DEM/buildings/roads for QGIS 3D, inspect them first, then export a deterministic Blender package with separate Terrain, Roads, and four building OBJ files. Horizontal scale and vertical exaggeration are explicit.
@@ -11,4 +11,4 @@ category=Vector
 experimental=True
 icon=icon.svg
 
-changelog=0.4.23 - Add GSI regional mesh/WGS84 geolocation metadata and explicit visual/physical vertical scaling metadata for future Thermal analysis.
+changelog=0.4.24 - Meter-based Terrain grid spacing, output size warnings, and consistent outward-facing building roof/wall face winding.

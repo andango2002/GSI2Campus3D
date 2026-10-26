@@ -88,7 +88,7 @@ class NoWheelComboBox(QComboBox):
 class MainDialog(QDialog):
     def __init__(self,iface):
         self.iface=iface
-        super().__init__(iface.mainWindow()); self.setWindowTitle('Campus3D Workflow [A] — GSI2Campus3D v0.4.23'); self.resize(880,740)
+        super().__init__(iface.mainWindow()); self.setWindowTitle('Campus3D Workflow [A] — GSI2Campus3D v0.4.24'); self.resize(880,740)
 
         # Outer layout + vertically scrollable content.
         # This keeps the branded full UI usable on 1920x1080 and smaller screens
@@ -116,7 +116,7 @@ class MainDialog(QDialog):
             '&nbsp;&nbsp;<span style="font-size:12pt; font-weight:700; color:#ffffff;">GSI2Campus3D</span><br>'
             '<span style="font-size:9pt; color:#d7dde2;">GSI data preparation for Blender</span>'
             '&nbsp;&nbsp;|&nbsp;&nbsp;'
-            '<span style="font-size:8.5pt; color:#b8c0c7;">Est. 2026 | Powered by IINO Lab. | Plugin v0.4.23</span><br>'
+            '<span style="font-size:8.5pt; color:#b8c0c7;">Est. 2026 | Powered by IINO Lab. | Plugin v0.4.24</span><br>'
             '<span style="font-size:8.8pt; font-weight:600; color:#e8ecef;">[A] QGIS  →  [B] Blender  →  GLB  →  CampusMint</span>'
             '</div>'
         )
@@ -169,12 +169,14 @@ class MainDialog(QDialog):
         self.blender_scale=NoWheelComboBox();
         for d in (1000,500,100,1): self.blender_scale.addItem(f'1:{d}' if d!=1 else '1:1（実寸）',d)
         self.blender_scale.setCurrentIndex(0); bxf.addRow('出力縮尺',self.blender_scale)
-        self.blender_zscale=NoWheelDoubleSpinBox(); self.blender_zscale.setRange(0.1,20.0); self.blender_zscale.setDecimals(2); self.blender_zscale.setSingleStep(0.25); self.blender_zscale.setValue(1.0); self.blender_zscale.setSuffix(' ×'); bxf.addRow('Z方向倍率（地形・建物・道路）',self.blender_zscale)
+        self.blender_zscale=NoWheelDoubleSpinBox(); self.blender_zscale.setRange(0.1,20.0); self.blender_zscale.setDecimals(2); self.blender_zscale.setSingleStep(0.25); self.blender_zscale.setValue(1.0); self.blender_zscale.setSuffix(' ×'); bxf.addRow('Z方向倍率（地形のみ強調）',self.blender_zscale)
         self.sync_3d_zscale=QCheckBox('QGIS 3Dビューの縦倍率と連動（推奨）'); self.sync_3d_zscale.setChecked(True)
         self.fetch_3d_zscale_btn=QPushButton('3Dビューから取得'); self.fetch_3d_zscale_btn.clicked.connect(lambda: self.sync_zscale_from_3d(False))
         zr=QHBoxLayout(); zr.addWidget(self.sync_3d_zscale); zr.addWidget(self.fetch_3d_zscale_btn)
         bxf.addRow('3D倍率連動',zr)
-        self.terrain_res=NoWheelDoubleSpinBox(); self.terrain_res.setRange(32,1024); self.terrain_res.setDecimals(0); self.terrain_res.setSingleStep(32); self.terrain_res.setValue(256); bxf.addRow('Terrain解像度（長辺セル数）',self.terrain_res)
+        self.terrain_res=NoWheelDoubleSpinBox(); self.terrain_res.setRange(1.0,1000.0); self.terrain_res.setDecimals(1); self.terrain_res.setSingleStep(5.0); self.terrain_res.setValue(20.0); self.terrain_res.setSuffix(' m'); bxf.addRow('Terrain格子間隔（m）',self.terrain_res)
+        self.terrain_estimate=QLabel('推定格子数：DEM生成後に確認できます'); bxf.addRow('出力規模の見積り',self.terrain_estimate)
+        self.terrain_res.valueChanged.connect(self.update_terrain_estimate)
         self.coast_interp=QCheckBox('海岸線・NoData境界を半セル補間してTerrainを端まで延ばす'); self.coast_interp.setChecked(True); bxf.addRow(self.coast_interp)
         self.fill_sea=QCheckBox('NoDataを海面下で埋めて広いTerrainとして出力'); self.fill_sea.setChecked(False); bxf.addRow(self.fill_sea)
         self.sea_floor=self.spin(-5.0); self.sea_floor.setRange(-200.0,50.0); self.sea_floor.setSingleStep(1.0); bxf.addRow('NoData埋め標高（m）',self.sea_floor)
@@ -190,7 +192,7 @@ class MainDialog(QDialog):
         bxf.addRow('処理状況',self.blender_status)
         bxf.addRow(QLabel('QGIS 3Dで縦倍率を調整すると、連動ON時はBlender倍率へ自動反映。'))
         root.addWidget(bx)
-        root.addWidget(QLabel('v0.4.23: 航空写真＋現在の2D表示の合成Terrain画像モードを追加しました。'))
+        root.addWidget(QLabel('v0.4.24: 航空写真＋現在の2D表示の合成Terrain画像モードを追加しました。'))
         root.addWidget(QLabel('3D確認: 表示 → 3Dマップビュー → 新規3Dマップビュー'))
         self._last_dem=None; self._last_buildings=[]; self._last_road=None; self._last_epsg=None; self._last_out=None
         self._last_3d_zscale_seen=None
@@ -236,7 +238,7 @@ class MainDialog(QDialog):
         self.blender_scale.setCurrentIndex(0)   # 1:1000
         self.blender_zscale.setValue(1.0)
         self.sync_3d_zscale.setChecked(True)
-        self.terrain_res.setValue(256.0)
+        self.terrain_res.setValue(20.0)
         self.coast_interp.setChecked(True)
         self.fill_sea.setChecked(False)
         self.sea_floor.setValue(-5.0)
@@ -308,7 +310,7 @@ class MainDialog(QDialog):
         if 0 <= si < self.blender_scale.count(): self.blender_scale.setCurrentIndex(si)
         self.blender_zscale.setValue(val('blender_zscale',1.0,float))
         self.sync_3d_zscale.setChecked(val('sync_3d_zscale',True,bool))
-        self.terrain_res.setValue(val('terrain_res',256.0,float))
+        self.terrain_res.setValue(val('terrain_spacing_m',20.0,float))
         self.coast_interp.setChecked(val('coast_interp',True,bool))
         self.fill_sea.setChecked(val('fill_sea',False,bool))
         self.sea_floor.setValue(val('sea_floor',-5.0,float))
@@ -334,7 +336,7 @@ class MainDialog(QDialog):
         s.setValue(p+'blender_scale_index',self.blender_scale.currentIndex())
         s.setValue(p+'blender_zscale',self.blender_zscale.value())
         s.setValue(p+'sync_3d_zscale',self.sync_3d_zscale.isChecked())
-        s.setValue(p+'terrain_res',self.terrain_res.value())
+        s.setValue(p+'terrain_spacing_m',self.terrain_res.value())
         s.setValue(p+'coast_interp',self.coast_interp.isChecked())
         s.setValue(p+'fill_sea',self.fill_sea.isChecked())
         s.setValue(p+'sea_floor',self.sea_floor.value())
@@ -1202,7 +1204,41 @@ class MainDialog(QDialog):
         except Exception:
             return None
 
-    def _write_terrain_obj(self, dem, path, origin_x, origin_y, scale_denominator, vertical_scale=1.0, long_cells=256, interpolate_boundary=True, fill_nodata=False, sea_floor_z=-5.0):
+    def _terrain_grid_dimensions(self, dem, spacing_m):
+        """Full DEM-extent grid, with spacing at most the requested metres."""
+        if dem is None or not dem.isValid():
+            raise RuntimeError('有効なDEMがありません。')
+        e=dem.extent(); w=float(e.width()); h=float(e.height())
+        d=float(spacing_m)
+        if not math.isfinite(d) or d<=0 or w<=0 or h<=0:
+            raise RuntimeError('Terrain格子間隔またはDEM範囲が不正です。')
+        nx=max(2,int(math.ceil(w/d))+1)
+        ny=max(2,int(math.ceil(h/d))+1)
+        return nx,ny,nx*ny
+
+    def update_terrain_estimate(self, *_):
+        """Show a planning estimate; do not trigger raster computation."""
+        label=getattr(self,'terrain_estimate',None)
+        if label is None:return
+        dem=getattr(self,'_last_dem',None)
+        if dem is None or not dem.isValid():
+            try:
+                epsg=self.zone.currentData()[1]
+                matches=QgsProject.instance().mapLayersByName(f'DEM_EPSG{epsg}')
+                dem=next((d for d in matches if d.isValid()),None)
+            except Exception:
+                dem=None
+        if dem is None:
+            label.setText('DEM生成後に見積もり可能')
+            return
+        try:
+            nx,ny,n=self._terrain_grid_dimensions(dem,self.terrain_res.value())
+            label.setText(f'{nx:,}×{ny:,} ≒ {n:,}点／最大{2*(nx-1)*(ny-1):,}三角形'
+                          + (' 【大規模・注意】' if n>2_000_000 else ''))
+        except Exception as exc:
+            label.setText(f'見積り不可: {exc}')
+
+    def _write_terrain_obj(self, dem, path, origin_x, origin_y, scale_denominator, vertical_scale=1.0, spacing_m=20.0, interpolate_boundary=True, fill_nodata=False, sea_floor_z=-5.0):
         """Write Terrain OBJ using the DEM valid/NoData boundary.
 
         Older versions emitted a quad only when all 4 cell corners had valid DEM
@@ -1211,15 +1247,13 @@ class MainDialog(QDialog):
         when enabled, inserts midpoint vertices on valid/NoData edges. This reaches
         approximately half a sampling cell closer to the true coastline.
 
-        For very high coastline fidelity increase long_cells (e.g. 512).\n\n        If fill_nodata=True, the full DEM rectangle is emitted and NoData\n        samples are assigned sea_floor_z. A Blender water plane can then hide\n        the artificial sea-floor surface, while the land is never cut inward.
+        Use smaller spacing_m to preserve more DEM detail (with higher memory cost).\n\n        If fill_nodata=True, the full DEM rectangle is emitted and NoData\n        samples are assigned sea_floor_z. A Blender water plane can then hide\n        the artificial sea-floor surface, while the land is never cut inward.
         """
         e=dem.extent(); w=e.width(); h=e.height()
         if w<=0 or h<=0: raise RuntimeError('DEMの範囲が不正です。')
-        long_cells=max(8,int(long_cells))
-        if w>=h:
-            nx=long_cells+1; ny=max(2,int(round(long_cells*h/w))+1)
-        else:
-            ny=long_cells+1; nx=max(2,int(round(long_cells*w/h))+1)
+        nx,ny,estimated=self._terrain_grid_dimensions(dem,spacing_m)
+        if estimated>12_000_000:
+            raise RuntimeError('Terrain推定格子点数が1,200万を超えます。格子間隔を大きくしてください。')
 
         xs=[e.xMinimum()+w*i/(nx-1) for i in range(nx)]
         ys=[e.yMinimum()+h*j/(ny-1) for j in range(ny)]
@@ -1329,7 +1363,7 @@ class MainDialog(QDialog):
         return {
             'min_z':minz,'nx':nx,'ny':ny,'vertices':len(vertices),'faces':len(faces),
             'model_width':w*factor,'model_height':h*factor,
-            'sampling_cell_m':cell_m,'boundary_interpolation':bool(interpolate_boundary),
+            'sampling_cell_m':cell_m,'requested_cell_m':float(spacing_m),'boundary_interpolation':bool(interpolate_boundary),
             'fill_nodata':bool(fill_nodata),'sea_floor_z_m':float(sea_floor_z),
             'original_valid_samples':int(original_valid_count),
             'sea_level_model_z':(0.0-minz)*factor*float(vertical_scale)
@@ -1366,6 +1400,19 @@ class MainDialog(QDialog):
                     ring=list(poly[0])
                     if len(ring)>1 and ring[0]==ring[-1]: ring=ring[:-1]
                     if len(ring)<3: continue
+                    # OBJ face winding assumes a CCW footprint (positive XY area).
+                    # GSI polygons can be supplied clockwise; normalize orientation
+                    # before emitting bottom (reversed), roof and outward-facing walls.
+                    signed_area2=sum(
+                        ring[k].x()*ring[(k+1)%len(ring)].y()
+                        - ring[(k+1)%len(ring)].x()*ring[k].y()
+                        for k in range(len(ring))
+                    )
+                    if abs(signed_area2)<1e-10:
+                        skipped+=1
+                        continue
+                    if signed_area2<0:
+                        ring.reverse()
                     bottom=[]; top=[]
                     for p in ring:
                         X=(p.x()-origin_x)*factor; Y=(p.y()-origin_y)*factor
@@ -1453,7 +1500,7 @@ class MainDialog(QDialog):
     def export_terrain_texture(self, dem, pkg, long_px=2048):
         """Render the selected Terrain image source over the DEM extent.
     
-        v0.4.23 additions:
+        v0.4.24 additions:
         - New PHOTO_CANVAS mode: renders GSI seamless photo as the base and
           composites the current 2D canvas layers on top, so white canvas
           background does not replace aerial imagery.
@@ -1921,9 +1968,25 @@ class MainDialog(QDialog):
                 used_3d_scale=self.sync_zscale_from_3d(True)
 
             zscale=float(self.blender_zscale.value())
+            nx,ny,estimated=self._terrain_grid_dimensions(dem,self.terrain_res.value())
+            self.update_terrain_estimate()
+            if estimated>12_000_000:
+                raise RuntimeError(f'Terrainが約{estimated:,}格子点になります（上限1,200万）。格子間隔を大きくしてください。')
+            if estimated>2_000_000:
+                reply=QMessageBox.warning(
+                    self,'大規模Terrain出力の確認',
+                    f'指定間隔 {self.terrain_res.value():g}m では、Terrainだけで約{estimated:,}格子点 '
+                    f'（最大{2*(nx-1)*(ny-1):,}三角形）になります。\n'
+                    '建物等はこれとは別に追加されます。メモリ不足や長時間の処理の可能性があります。\n'
+                    'このまま出力しますか？',
+                    QMessageBox.Yes | QMessageBox.No,QMessageBox.No
+                )
+                if reply!=QMessageBox.Yes:
+                    self.set_blender_progress(0,'大規模Terrain出力をキャンセルしました')
+                    return
             self.save_settings()
             pkg,manifest=self.export_blender_package(
-                out,dem,building_items,road,epsg,scale_den,int(self.terrain_res.value()),zscale,
+                out,dem,building_items,road,epsg,scale_den,float(self.terrain_res.value()),zscale,
                 self.coast_interp.isChecked(),self.fill_sea.isChecked(),self.sea_floor.value(),
                 self.export_texture.isChecked(),int(self.texture_px.value())
             )
@@ -2164,7 +2227,7 @@ class MainDialog(QDialog):
             self.set_main_progress(100,'処理完了')
             # Ensure Windows/Qt repaints the completed bar before opening the modal dialog.
             QApplication.processEvents()
-            msg=f'v0.4.23 処理完了\n\n第{z}系 / EPSG:{epsg}\nDEM XMLフォルダをQuickDEM4JPで一括変換しました。\n建物・道路をDEM範囲で切り抜き、建物はDEM有効値で追加検証しました。\n建物を4分類しました。'
+            msg=f'v0.4.24 処理完了\n\n第{z}系 / EPSG:{epsg}\nDEM XMLフォルダをQuickDEM4JPで一括変換しました。\n建物・道路をDEM範囲で切り抜き、建物はDEM有効値で追加検証しました。\n建物を4分類しました。'
             if False:  # auto 3D launch intentionally disabled in v0.4.0
                 if auto3d_ok: msg += f'\n\n3Dビューを開き、DEM_EPSG{epsg} をTerrainに自動設定しました。'
                 else: msg += f'\n\n3Dビュー自動設定だけ失敗しました。データ生成は完了しています。\n{auto3d_err}'
