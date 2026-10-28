@@ -3,12 +3,12 @@ name=GSI2Campus3D
 qgisMinimumVersion=3.34
 qgisMaximumVersion=3.99
 description=Prepare GSI Fundamental Geospatial Data for QGIS 3D / Blender workflows.
-version=0.4.24
+version=0.4.25
 author=Akinaru Iino / OpenAI prototype
 email=aiino@abe.niit.ac.jp
-about=Prepare GSI DEM/buildings/roads for QGIS 3D, inspect them first, then export a deterministic Blender package with separate Terrain, Roads, and four building OBJ files. Horizontal scale and vertical exaggeration are explicit.
+about=Prepare GSI DEM/buildings/roads for QGIS 3D, inspect them first, then export a deterministic Blender package with separate Terrain, Roads, and four building OBJ files. Supports automatic plane rectangular CRS suggestions from GSI regional mesh codes.
 category=Vector
 experimental=True
 icon=icon.svg
 
-changelog=0.4.24 - Meter-based Terrain grid spacing, output size warnings, and consistent outward-facing building roof/wall face winding.
+changelog=0.4.25 - Automatically suggest and select Japan plane rectangular CRS from GSI mesh codes; retain manual override and ambiguity warnings. Fix QComboBox auto-selection.

@@ -44,6 +44,96 @@ ZONE_AREAS={
     19:'東京都（南方島しょ部・東側の一部）',
 }
 
+
+# Japanese 1st/2nd/3rd regional meshes: calculate WGS84-like geographic
+# center directly from the code (no online geocoding needed).
+def _mesh_code_center(code):
+    code=str(code).strip()
+    if len(code) not in (4,6,8) or not code.isdigit():
+        return None
+    lat_index=int(code[:2]); lon_index=int(code[2:4]);
+    if not (30 <= lat_index <= 75 and 20 <= lon_index <= 60):
+        return None
+    lat=lat_index / 1.5
+    lon=lon_index + 100.0
+    lat_step=2.0/3.0
+    lon_step=1.0
+    if len(code)>=6:
+        a=int(code[4]); b=int(code[5])
+        if a>7 or b>7: return None
+        lat += a*(lat_step/8.0)
+        lon += b*(lon_step/8.0)
+        lat_step/=8.0; lon_step/=8.0
+    if len(code)==8:
+        a=int(code[6]); b=int(code[7])
+        if a>9 or b>9: return None
+        lat += a*(lat_step/10.0)
+        lon += b*(lon_step/10.0)
+        lat_step/=10.0; lon_step/=10.0
+    return lat+lat_step/2.0,lon+lon_step/2.0
+
+# These are geographic suggestions, NOT a substitute for the legally defined
+# administrative applicability areas. Border areas explicitly require review.
+_ZONE_CENTRAL_LONGITUDES={
+    2:131.0, 3:132+10/60, 4:133.5, 5:134+20/60,
+    6:136.0, 7:137+10/60, 8:138.5, 9:139+50/60, 10:140+50/60,
+}
+
+def _suggest_zone_from_center(lat,lon):
+    if not (20 <= lat <= 46.5 and 122 <= lon <= 155.5):
+        return None, '範囲外'
+    # Legally explicit island geographic partitioning. Still an approximation
+    # where a mesh spans a boundary.
+    if lat < 28:
+        if 122 <= lon < 126: return 16,'島しょ部（要確認）'
+        if 126 <= lon < 130: return 15,'島しょ部（要確認）'
+        if 130 <= lon < 134: return 17,'島しょ部（要確認）'
+        if 134 <= lon < 140.5: return 18,'島しょ部（要確認）'
+        if 140.5 <= lon < 143: return 14,'島しょ部（要確認）'
+        if 143 <= lon <= 155.5: return 19,'島しょ部（要確認）'
+    # Islands west of Kyushu, including the Amami archipelago.
+    if 27 <= lat < 32 and 128.3 <= lon <= 130.22:
+        return 1,'島しょ部（要確認）'
+    if lat >= 41.2:
+        if lon <= 141.1: return 11,'北海道：市町村境界は要確認'
+        if lon >= 143.1: return 13,'北海道：市町村境界は要確認'
+        return 12,'北海道：市町村境界は要確認'
+    # Tokyo/Izu islands (mainland Tokyo remains IX).
+    if lat < 34 and lon > 138.5:
+        return 9,'島しょ部（要確認）'
+    # The north-east area is legally assigned to X, not merely the nearest
+    # central meridian; some of Fukushima/Ibaraki belong to IX.
+    if 38.3 <= lat < 41.2 and 139.5 <= lon <= 142.5:
+        return 10,'東北地方（県境付近は要確認）'
+    # Mie/Ise belongs to VI despite geographic proximity to VII.
+    if 33.6 <= lat <= 35.0 and 135.7 <= lon <= 136.98:
+        return 6,'三重・紀伊周辺（要確認）'
+    if 28 <= lat < 34 and lon < 132.5:
+        return 2,'九州南部（離島は要確認）'
+    if not (127 < lon < 143):
+        return None,'この地域は手動選択してください'
+    candidates=sorted(_ZONE_CENTRAL_LONGITUDES.items(),key=lambda kv:abs(lon-kv[1]))
+    best, second=candidates[:2]
+    # Longitude can only serve as a hint around prefectural boundaries.
+    delta=abs(lon-second[1])-abs(lon-best[1])
+    qualifier='県境・適用区域は要確認' if delta < 0.45 else '中心位置から推定（最終確認推奨）'
+    return best[0],qualifier
+
+# Generic basename matching for GSI DEM and vector data. Filtering the
+# source names avoids accidentally using previously generated QGIS files.
+_SOURCE_MESH_RX=(
+    re.compile(r'^FG-GML-(\d{4})-(\d{2})-(\d{2})-DEM',re.I),
+    re.compile(r'^FG-GML-(\d{4})-(\d{2})-DEM',re.I),
+    re.compile(r'^FG-GML-(\d{8})-DEM',re.I),
+    re.compile(r'^FG-GML-(\d{6})(?:-|\.)',re.I),
+)
+def _mesh_code_from_filename(filename):
+    base=os.path.basename(filename)
+    for rx in _SOURCE_MESH_RX:
+        m=rx.match(base)
+        if m: return ''.join(m.groups())
+    return None
+
 class GSI2Campus3D:
     def __init__(self,iface):
         self.iface=iface; self.action=None; self.dialog=None
@@ -88,7 +178,7 @@ class NoWheelComboBox(QComboBox):
 class MainDialog(QDialog):
     def __init__(self,iface):
         self.iface=iface
-        super().__init__(iface.mainWindow()); self.setWindowTitle('Campus3D Workflow [A] — GSI2Campus3D v0.4.24'); self.resize(880,740)
+        super().__init__(iface.mainWindow()); self.setWindowTitle('Campus3D Workflow [A] — GSI2Campus3D v0.4.25'); self.resize(880,740)
 
         # Outer layout + vertically scrollable content.
         # This keeps the branded full UI usable on 1920x1080 and smaller screens
@@ -116,7 +206,7 @@ class MainDialog(QDialog):
             '&nbsp;&nbsp;<span style="font-size:12pt; font-weight:700; color:#ffffff;">GSI2Campus3D</span><br>'
             '<span style="font-size:9pt; color:#d7dde2;">GSI data preparation for Blender</span>'
             '&nbsp;&nbsp;|&nbsp;&nbsp;'
-            '<span style="font-size:8.5pt; color:#b8c0c7;">Est. 2026 | Powered by IINO Lab. | Plugin v0.4.24</span><br>'
+            '<span style="font-size:8.5pt; color:#b8c0c7;">Est. 2026 | Powered by IINO Lab. | Plugin v0.4.25</span><br>'
             '<span style="font-size:8.8pt; font-weight:600; color:#e8ecef;">[A] QGIS  →  [B] Blender  →  GLB  →  CampusMint</span>'
             '</div>'
         )
@@ -152,7 +242,18 @@ class MainDialog(QDialog):
         for z,e in ZONES:
             area=ZONE_AREAS.get(z,'')
             self.zone.addItem(f'第 {z} 系  —  {area}  —  EPSG:{e}',(z,e))
-        self.zone.setCurrentIndex(7); cf.addRow('系',self.zone); root.addWidget(cb)
+        self.zone.setCurrentIndex(7)
+        cf.addRow('系（自動候補・手動変更可）',self.zone)
+        self.auto_zone=QCheckBox('DEMの地域メッシュコードから座標系を推定する（推奨）')
+        self.auto_zone.setChecked(True)
+        cf.addRow(self.auto_zone)
+        self.zone_status=QLabel('DEM XMLフォルダを選ぶと、座標系の候補を表示します。')
+        self.zone_status.setWordWrap(True)
+        cf.addRow('推定結果',self.zone_status)
+        self.zone_detect_btn=QPushButton('区画番号から再判定')
+        self.zone_detect_btn.setToolTip('DEMファイル名の6桁・8桁の地域メッシュコードから中心位置を求めます。')
+        cf.addRow(self.zone_detect_btn)
+        root.addWidget(cb)
         bb=QGroupBox('建物分類・3D'); bf=QFormLayout(bb)
         self.area=NoWheelDoubleSpinBox(); self.area.setRange(1,1000000); self.area.setValue(500); self.area.setSuffix(' m²'); bf.addRow('大規模判定面積',self.area)
         self.h_ns=self.spin(7); self.h_nl=self.spin(12); self.h_ss=self.spin(12); self.h_sl=self.spin(17)
@@ -192,12 +293,20 @@ class MainDialog(QDialog):
         bxf.addRow('処理状況',self.blender_status)
         bxf.addRow(QLabel('QGIS 3Dで縦倍率を調整すると、連動ON時はBlender倍率へ自動反映。'))
         root.addWidget(bx)
-        root.addWidget(QLabel('v0.4.24: 航空写真＋現在の2D表示の合成Terrain画像モードを追加しました。'))
+        root.addWidget(QLabel('v0.4.25: メッシュコードからの座標系自動選択を改良しました（手動選択も可）。'))
         root.addWidget(QLabel('3D確認: 表示 → 3Dマップビュー → 新規3Dマップビュー'))
         self._last_dem=None; self._last_buildings=[]; self._last_road=None; self._last_epsg=None; self._last_out=None
         self._last_3d_zscale_seen=None
         self.load_settings()
         self.refresh_texture_sources()
+        # Connect AFTER loading settings: a stored manual selection must not
+        # be mistaken for a new user override.
+        self.zone.currentIndexChanged.connect(self._zone_manually_changed)
+        self.auto_zone.toggled.connect(self._zone_auto_toggled)
+        self.zone_detect_btn.clicked.connect(self._zone_redetect_clicked)
+        self.root_edit.editingFinished.connect(self._source_folder_changed)
+        self.dem_dir_edit.editingFinished.connect(self._source_folder_changed)
+        QTimer.singleShot(0,self._initialize_zone_status)
 
         # Poll the currently open QGIS 3D view while this non-modal dialog is open.
         # This keeps the Blender Z multiplier synchronized without requiring
@@ -220,8 +329,12 @@ class MainDialog(QDialog):
         if reply != QMessageBox.Yes:
             return
 
-        # Coordinate system: Plane Rectangular CS VIII (Niigata etc.)
-        self.zone.setCurrentIndex(7)
+        # Coordinate system: automatic suggestion from the retained sources.
+        self._auto_zone_setting=True
+        try: self.zone.setCurrentIndex(7)   # VIII fallback if no mesh code found
+        finally: self._auto_zone_setting=False
+        self.auto_zone.setChecked(True)
+        self.detect_zone_from_sources(force=True)
 
         # Building classification / 3D
         self.area.setValue(500.0)
@@ -300,6 +413,7 @@ class MainDialog(QDialog):
         self.out_edit.setText(val('out',self.out_edit.text(),str) or self.out_edit.text())
         zi=val('zone_index',7,int)
         if 0 <= zi < self.zone.count(): self.zone.setCurrentIndex(zi)
+        self.auto_zone.setChecked(val('auto_zone',True,bool))
         self.area.setValue(val('area',500.0,float))
         self.h_ns.setValue(val('h_ns',7.0,float)); self.h_nl.setValue(val('h_nl',12.0,float))
         self.h_ss.setValue(val('h_ss',12.0,float)); self.h_sl.setValue(val('h_sl',17.0,float))
@@ -327,6 +441,7 @@ class MainDialog(QDialog):
         s.setValue(p+'dem_dir',self.dem_dir_edit.text().strip())
         s.setValue(p+'out',self.out_edit.text().strip())
         s.setValue(p+'zone_index',self.zone.currentIndex())
+        s.setValue(p+'auto_zone',self.auto_zone.isChecked())
         s.setValue(p+'area',self.area.value())
         s.setValue(p+'h_ns',self.h_ns.value()); s.setValue(p+'h_nl',self.h_nl.value())
         s.setValue(p+'h_ss',self.h_ss.value()); s.setValue(p+'h_sl',self.h_sl.value())
@@ -570,16 +685,152 @@ class MainDialog(QDialog):
             return [],'AUTO:none'
         best=max(rasters,key=self._texture_candidate_score)
         return [best],f'AUTO:{best.name()}'
+    def _initialize_zone_status(self):
+        if self.auto_zone.isChecked():
+            self.detect_zone_from_sources()
+        else:
+            self._zone_auto_toggled(False)
+
+    def _zone_redetect_clicked(self):
+        # Explicit re-detection can recover from an earlier manual override.
+        if not self.auto_zone.isChecked():
+            self.auto_zone.setChecked(True)
+        else:
+            self.detect_zone_from_sources(force=True)
+
+    def _zone_manually_changed(self,index):
+        if getattr(self,'_auto_zone_setting',False):
+            return
+        if self.auto_zone.isChecked():
+            self.auto_zone.setChecked(False)
+        z,epsg=self.zone.currentData()
+        self.zone_status.setText(f'手動指定：第{z}系 / EPSG:{epsg}（自動推定OFF）')
+
+    def _zone_auto_toggled(self,enabled):
+        if enabled:
+            self.detect_zone_from_sources(force=True)
+        else:
+            z,epsg=self.zone.currentData()
+            self.zone_status.setText(f'手動指定：第{z}系 / EPSG:{epsg}（自動推定OFF）')
+
+    def _source_folder_changed(self):
+        if self.auto_zone.isChecked():
+            self.detect_zone_from_sources()
+
+    def detect_zone_from_sources(self,force=False):
+        if not self.auto_zone.isChecked():
+            return
+        # DEM sources are preferred; GSI source root serves as fallback.
+        folders=[self.dem_dir_edit.text().strip(),self.root_edit.text().strip()]
+        codes=set()
+        scanned=0
+        for folder in dict.fromkeys(folders):
+            if not folder or not os.path.isdir(folder):
+                continue
+            for directory,dirs,files in os.walk(folder):
+                # Avoid generated/temporary folders in a reused output path.
+                dirs[:]=[d for d in dirs if not d.lower().endswith('_quickdem_input')]
+                for name in files:
+                    if not name.lower().endswith(('.xml','.zip')):
+                        continue
+                    code=_mesh_code_from_filename(name)
+                    if code:
+                        codes.add(code)
+                    scanned+=1
+                    if scanned >= 20000:
+                        break
+                if scanned>=20000: break
+            if codes:
+                break
+        if not codes:
+            self._zone_auto_ambiguous=True
+            self.zone_status.setText('区画番号を検出できません。系を手動で確認してください。')
+            return
+        # Prefer third-order mesh centers over redundant parent 2nd-order
+        # codes so a dense DEM dataset is not biased by vector filenames.
+        if any(len(c)==8 for c in codes):
+            codes={c for c in codes if len(c)==8}
+        elif any(len(c)==6 for c in codes):
+            codes={c for c in codes if len(c)==6}
+        results=[]
+        for code in codes:
+            center=_mesh_code_center(code)
+            if center is None: continue
+            zone,detail=_suggest_zone_from_center(*center)
+            if zone is not None:
+                results.append((zone,detail,center))
+        if not results:
+            self._zone_auto_ambiguous=True
+            self.zone_status.setText('有効な区画番号が見つかりません。手動で系を確認してください。')
+            return
+        # Never auto-apply one candidate if multiple zones occur in the input.
+        zones={r[0] for r in results}
+        if len(zones)!=1:
+            self._zone_auto_ambiguous=True
+            self.zone_status.setText('複数系の候補（'+', '.join('第'+str(z)+'系' for z in sorted(zones))+'）が含まれます。手動確認してください。')
+            return
+        self._zone_auto_ambiguous=False
+        z=results[0][0]
+        # Qt/PyQt can fail to compare a Python tuple with QVariant userData
+        # in QComboBox.findData(). Compare the Python values of each item
+        # instead; this works for both tuple and list round-trips.
+        expected_epsg=6668+z
+        idx=-1
+        for i in range(self.zone.count()):
+            data=self.zone.itemData(i)
+            try:
+                item_zone,item_epsg=int(data[0]),int(data[1])
+            except (TypeError,ValueError,IndexError,KeyError):
+                continue
+            if item_zone==z and item_epsg==expected_epsg:
+                idx=i
+                break
+        if idx<0:
+            self._zone_auto_ambiguous=True
+            self.zone_status.setText(
+                f'自動候補：第{z}系 / EPSG:{expected_epsg}。'
+                'ただしプルダウンに一致する項目がなく、自動反映できません。手動で選択してください。'
+            )
+            return
+        self._auto_zone_setting=True
+        try:
+            self.zone.setCurrentIndex(idx)
+        finally:
+            self._auto_zone_setting=False
+        # Never report success unless the displayed choice is correct.
+        actual=self.zone.currentData()
+        try:
+            selected_ok=(int(actual[0])==z and int(actual[1])==expected_epsg)
+        except (TypeError,ValueError,IndexError,KeyError):
+            selected_ok=False
+        if not selected_ok:
+            self._zone_auto_ambiguous=True
+            self.zone_status.setText(
+                f'自動候補：第{z}系 / EPSG:{expected_epsg}。'
+                'プルダウンへの反映を確認できません。手動で選択してください。'
+            )
+            return
+        la=sum(x[2][0] for x in results)/len(results)
+        lo=sum(x[2][1] for x in results)/len(results)
+        warn=any('要確認' in x[1] for x in results)
+        self._zone_auto_ambiguous=warn
+        self.zone_status.setText(
+            f'自動選択済み：第{z}系 / EPSG:{6668+z}  '
+            f'（地域メッシュ{len(results)}件、中心約 {la:.3f}°N, {lo:.3f}°E）'
+            + ('\n※ 適用区域・県境・離島は手動確認してください。' if warn else
+               '\n※ 推定値です。適用区域は確認してください。')
+        )
+
     def spin(self,v):
         s=NoWheelDoubleSpinBox(); s.setRange(0,10000); s.setDecimals(1); s.setValue(v); s.setSuffix(' m'); return s
     def pick_root(self):
         p=QFileDialog.getExistingDirectory(self,'GSIフォルダを選択');
         if p:
-            self.root_edit.setText(p); self.save_settings()
+            self.root_edit.setText(p); self._source_folder_changed(); self.save_settings()
     def pick_dem_dir(self):
         p=QFileDialog.getExistingDirectory(self,'DEM XMLフォルダを選択')
         if p:
-            self.dem_dir_edit.setText(p); self.save_settings()
+            self.dem_dir_edit.setText(p); self._source_folder_changed(); self.save_settings()
 
     def _extract_gsi_mesh_codes(self, paths):
         """Extract Japanese standard regional mesh codes from GSI source filenames.
@@ -1500,7 +1751,7 @@ class MainDialog(QDialog):
     def export_terrain_texture(self, dem, pkg, long_px=2048):
         """Render the selected Terrain image source over the DEM extent.
     
-        v0.4.24 additions:
+        v0.4.25 additions:
         - New PHOTO_CANVAS mode: renders GSI seamless photo as the base and
           composites the current 2D canvas layers on top, so white canvas
           background does not replace aerial imagery.
@@ -2148,6 +2399,15 @@ class MainDialog(QDialog):
             return False, str(e)
 
     def process(self):
+        if self.auto_zone.isChecked() and getattr(self,'_zone_auto_ambiguous',False):
+            answer=QMessageBox.question(
+                self,'平面直角座標系の確認',
+                '区画番号からの座標系の推定に確認が必要です。\n'
+                '現在選択されている座標系で処理を続けますか？\n'
+                '必要ならプルダウンで座標系を手動選択してください。',
+                QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
         self.save_settings()
         root=self.root_edit.text().strip(); dem_dir=self.dem_dir_edit.text().strip(); out=self.out_edit.text().strip()
         if not root or not os.path.isdir(root): QMessageBox.warning(self,'GSI2Campus3D','GSI入力フォルダを指定してください。'); return
@@ -2227,7 +2487,7 @@ class MainDialog(QDialog):
             self.set_main_progress(100,'処理完了')
             # Ensure Windows/Qt repaints the completed bar before opening the modal dialog.
             QApplication.processEvents()
-            msg=f'v0.4.24 処理完了\n\n第{z}系 / EPSG:{epsg}\nDEM XMLフォルダをQuickDEM4JPで一括変換しました。\n建物・道路をDEM範囲で切り抜き、建物はDEM有効値で追加検証しました。\n建物を4分類しました。'
+            msg=f'v0.4.25 処理完了\n\n第{z}系 / EPSG:{epsg}\nDEM XMLフォルダをQuickDEM4JPで一括変換しました。\n建物・道路をDEM範囲で切り抜き、建物はDEM有効値で追加検証しました。\n建物を4分類しました。'
             if False:  # auto 3D launch intentionally disabled in v0.4.0
                 if auto3d_ok: msg += f'\n\n3Dビューを開き、DEM_EPSG{epsg} をTerrainに自動設定しました。'
                 else: msg += f'\n\n3Dビュー自動設定だけ失敗しました。データ生成は完了しています。\n{auto3d_err}'
