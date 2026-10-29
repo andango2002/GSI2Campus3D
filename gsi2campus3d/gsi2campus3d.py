@@ -178,7 +178,7 @@ class NoWheelComboBox(QComboBox):
 class MainDialog(QDialog):
     def __init__(self,iface):
         self.iface=iface
-        super().__init__(iface.mainWindow()); self.setWindowTitle('Campus3D Workflow [A] — GSI2Campus3D v0.4.25'); self.resize(880,740)
+        super().__init__(iface.mainWindow()); self.setWindowTitle('Campus3D Workflow [A] — GSI2Campus3D v0.4.29'); self.resize(880,740)
 
         # Outer layout + vertically scrollable content.
         # This keeps the branded full UI usable on 1920x1080 and smaller screens
@@ -206,7 +206,7 @@ class MainDialog(QDialog):
             '&nbsp;&nbsp;<span style="font-size:12pt; font-weight:700; color:#ffffff;">GSI2Campus3D</span><br>'
             '<span style="font-size:9pt; color:#d7dde2;">GSI data preparation for Blender</span>'
             '&nbsp;&nbsp;|&nbsp;&nbsp;'
-            '<span style="font-size:8.5pt; color:#b8c0c7;">Est. 2026 | Powered by IINO Lab. | Plugin v0.4.25</span><br>'
+            '<span style="font-size:8.5pt; color:#b8c0c7;">Est. 2026 | Powered by IINO Lab. | Plugin v0.4.29</span><br>'
             '<span style="font-size:8.8pt; font-weight:600; color:#e8ecef;">[A] QGIS  →  [B] Blender  →  GLB  →  CampusMint</span>'
             '</div>'
         )
@@ -275,8 +275,13 @@ class MainDialog(QDialog):
         self.fetch_3d_zscale_btn=QPushButton('3Dビューから取得'); self.fetch_3d_zscale_btn.clicked.connect(lambda: self.sync_zscale_from_3d(False))
         zr=QHBoxLayout(); zr.addWidget(self.sync_3d_zscale); zr.addWidget(self.fetch_3d_zscale_btn)
         bxf.addRow('3D倍率連動',zr)
-        self.terrain_res=NoWheelDoubleSpinBox(); self.terrain_res.setRange(1.0,1000.0); self.terrain_res.setDecimals(1); self.terrain_res.setSingleStep(5.0); self.terrain_res.setValue(20.0); self.terrain_res.setSuffix(' m'); bxf.addRow('Terrain格子間隔（m）',self.terrain_res)
-        self.terrain_estimate=QLabel('推定格子数：DEM生成後に確認できます'); bxf.addRow('出力規模の見積り',self.terrain_estimate)
+        # v0.4.28: controls are placed in the local-extent extension immediately
+        # below the map selection UI. Creation and saved settings remain here.
+        self.terrain_res=NoWheelDoubleSpinBox(); self.terrain_res.setRange(1.0,1000.0); self.terrain_res.setDecimals(1); self.terrain_res.setSingleStep(1.0); self.terrain_res.setValue(20.0); self.terrain_res.setSuffix(' m')
+        self.terrain_res.setKeyboardTracking(True)  # live feedback, before focus leaves input
+        self.terrain_res.setToolTip('小さいほど詳細になりますが、頂点数と処理負荷が増加します。値を変更すると即座に見積りを更新します。')
+        self.terrain_estimate=QLabel('推定格子数：DEM生成後に確認できます')
+        self.terrain_estimate.setWordWrap(True)
         self.terrain_res.valueChanged.connect(self.update_terrain_estimate)
         self.coast_interp=QCheckBox('海岸線・NoData境界を半セル補間してTerrainを端まで延ばす'); self.coast_interp.setChecked(True); bxf.addRow(self.coast_interp)
         self.fill_sea=QCheckBox('NoDataを海面下で埋めて広いTerrainとして出力'); self.fill_sea.setChecked(False); bxf.addRow(self.fill_sea)
@@ -293,7 +298,7 @@ class MainDialog(QDialog):
         bxf.addRow('処理状況',self.blender_status)
         bxf.addRow(QLabel('QGIS 3Dで縦倍率を調整すると、連動ON時はBlender倍率へ自動反映。'))
         root.addWidget(bx)
-        root.addWidget(QLabel('v0.4.25: メッシュコードからの座標系自動選択を改良しました（手動選択も可）。'))
+        root.addWidget(QLabel('v0.4.29: 任意矩形の選択範囲は青い枠線のみ表示（内部透明）。'))
         root.addWidget(QLabel('3D確認: 表示 → 3Dマップビュー → 新規3Dマップビュー'))
         self._last_dem=None; self._last_buildings=[]; self._last_road=None; self._last_epsg=None; self._last_out=None
         self._last_3d_zscale_seen=None
@@ -1751,7 +1756,7 @@ class MainDialog(QDialog):
     def export_terrain_texture(self, dem, pkg, long_px=2048):
         """Render the selected Terrain image source over the DEM extent.
     
-        v0.4.25 additions:
+        v0.4.27 additions:
         - New PHOTO_CANVAS mode: renders GSI seamless photo as the base and
           composites the current 2D canvas layers on top, so white canvas
           background does not replace aerial imagery.
@@ -2473,6 +2478,8 @@ class MainDialog(QDialog):
                     r=self.clip_extent(r,dem.extent())
                 rl=self.save(r,os.path.join(out,f'RdEdg_EPSG{epsg}.gpkg'),f'RdEdg_EPSG{epsg}'); self.mark_generated(rl); project.addMapLayer(rl,False); g_i.addLayer(rl); generated_vectors.append(rl); blender_road=rl
             self._last_dem=dem; self._last_buildings=blender_buildings; self._last_road=blender_road; self._last_epsg=epsg; self._last_out=out
+            # Populate the live terrain-size preview as soon as the DEM exists.
+            self.update_terrain_estimate()
             self.set_main_progress(90,'生成レイヤを整理中…')
             if self.hide_sources.isChecked():
                 self.hide_source_layers(project,rootnode,root,None)
@@ -2487,7 +2494,7 @@ class MainDialog(QDialog):
             self.set_main_progress(100,'処理完了')
             # Ensure Windows/Qt repaints the completed bar before opening the modal dialog.
             QApplication.processEvents()
-            msg=f'v0.4.25 処理完了\n\n第{z}系 / EPSG:{epsg}\nDEM XMLフォルダをQuickDEM4JPで一括変換しました。\n建物・道路をDEM範囲で切り抜き、建物はDEM有効値で追加検証しました。\n建物を4分類しました。'
+            msg=f'v0.4.29 処理完了\n\n第{z}系 / EPSG:{epsg}\nDEM XMLフォルダをQuickDEM4JPで一括変換しました。\n建物・道路をDEM範囲で切り抜き、建物はDEM有効値で追加検証しました。\n建物を4分類しました。'
             if False:  # auto 3D launch intentionally disabled in v0.4.0
                 if auto3d_ok: msg += f'\n\n3Dビューを開き、DEM_EPSG{epsg} をTerrainに自動設定しました。'
                 else: msg += f'\n\n3Dビュー自動設定だけ失敗しました。データ生成は完了しています。\n{auto3d_err}'
